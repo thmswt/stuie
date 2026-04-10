@@ -1,10 +1,14 @@
 use crate::config::{Config, ProviderConfig, ProviderType};
 use crate::storage::{Bucket, Object, StorageBackend, ProgressCallback};
+use object_store::path::Path as ObjectPath;
 use crate::storage::s3::S3Storage;
 use ratatui::widgets::{ListState, TableState};
+use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use ratatui_explorer::{FileExplorer, FileExplorerBuilder, Theme};
+use anyhow::{Result};
 
 pub enum InputMode {
     Normal,
@@ -13,6 +17,7 @@ pub enum InputMode {
     DownloadPrompt,
     UploadPrompt,
     DeleteConfirmation,
+    CreateFolderPrompt,
 }
 
 #[derive(PartialEq, Eq)]
@@ -34,27 +39,36 @@ pub enum SidebarItem {
     Bucket { provider_index: usize, name: String },
 }
 
-pub struct TransferTask {
-    pub id: String,
-    pub filename: String,
-    pub is_upload: bool,
-    pub bytes_transferred: u64,
-    pub total_size: u64,
-    pub start_time: std::time::Instant,
-    pub target_path: String,
+#[derive(Clone, PartialEq, Eq)]
+pub enum TaskType {
+    Upload,
+    Download,
+    CreateFolder,
+    Delete,
 }
 
 #[derive(Clone)]
-pub struct FinishedTransfer {
-    pub filename: String,
-    pub target_path: String,
-    pub is_upload: bool,
+pub struct AppTask {
+    pub id: String,
+    pub description: String,
+    pub task_type: TaskType,
+    pub bytes_transferred: u64,
+    pub total_size: u64,
+    pub start_time: std::time::Instant,
+}
+
+#[derive(Clone)]
+pub struct FinishedTask {
+    pub description: String,
+    pub task_type: TaskType,
     pub result: Result<(), String>,
+    pub end_time: std::time::Instant,
 }
 
 pub enum AppEvent {
-    TransferProgress { id: String, bytes: u64 },
-    TransferFinished { id: String, result: Result<(), String> },
+    TaskProgress { id: String, bytes: u64 },
+    TaskFinished { id: String, result: Result<(), String> },
+    RequestRefresh,
 }
 
 pub struct App {
@@ -67,9 +81,10 @@ pub struct App {
     pub show_help: bool,
     pub error_message: Option<String>,
     pub save_message: Option<String>,
+    pub save_message_time: Option<std::time::Instant>,
     pub active_provider_index: Option<usize>,
     pub pending_delete_index: Option<usize>,
-    
+
     // Navigation State
     pub active_pane: Pane,
     pub sidebar_state: ListState,
@@ -83,18 +98,39 @@ pub struct App {
     pub preview_data: Option<bytes::Bytes>,
     pub search_query: String,
 
-    // Transfer State
-    pub active_transfers: Vec<TransferTask>,
-    pub last_finished_transfer: Option<FinishedTransfer>,
+    // Task State
+    pub active_tasks: Vec<AppTask>,
+    pub last_finished_task: Option<FinishedTask>,
+    pub session_tasks: Vec<FinishedTask>,
     pub prompt_input: String,
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub event_rx: mpsc::UnboundedReceiver<AppEvent>,
+
+    // File Explorer for Upload
+    pub file_explorer: FileExplorer,
+
+    pub copy_button_area: Option<ratatui::layout::Rect>,
+    pub error_copy_area: Option<ratatui::layout::Rect>,
+    pub task_copy_area: Option<ratatui::layout::Rect>,
 }
 
 impl App {
     pub async fn new() -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let config = Config::load().unwrap_or_default();
+
+        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let theme = Theme::default()
+            .with_highlight_symbol("> ")
+            .with_highlight_item_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            .with_highlight_dir_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+
+        let file_explorer = FileExplorerBuilder::default()
+            .working_dir(home_dir)
+            .theme(theme)
+            .build()
+            .expect("Failed to initialize file explorer");
+
         let mut app = Self {
             config,
             storage_providers: Vec::new(),
@@ -105,6 +141,7 @@ impl App {
             show_help: false,
             error_message: None,
             save_message: None,
+            save_message_time: None,
             active_provider_index: None,
             pending_delete_index: None,
             active_pane: Pane::Sidebar,
@@ -118,11 +155,16 @@ impl App {
             current_path: None,
             preview_data: None,
             search_query: String::new(),
-            active_transfers: Vec::new(),
-            last_finished_transfer: None,
+            active_tasks: Vec::new(),
+            last_finished_task: None,
+            session_tasks: Vec::new(),
             prompt_input: String::new(),
             event_tx,
             event_rx,
+            file_explorer,
+            copy_button_area: None,
+            error_copy_area: None,
+            task_copy_area: None,
         };
         
         app.refresh_storage_providers().await;
@@ -169,6 +211,9 @@ impl App {
     pub async fn refresh_storage_providers(&mut self) {
         let mut storage_providers: Vec<Box<dyn StorageBackend>> = Vec::new();
         for (i, provider_config) in self.config.providers.iter().enumerate() {
+            if !provider_config.enabled {
+                continue;
+            }
             match provider_config.provider_type {
                 ProviderType::S3 => {
                     match S3Storage::new(provider_config.clone(), i).await {
@@ -203,35 +248,249 @@ impl App {
         self.error_message = Some(msg);
     }
 
-    pub fn update_transfers(&mut self) {
+    pub async fn update_tasks(&mut self) {
+        // Auto-dismiss save message after 2 seconds
+        if let Some(start_time) = self.save_message_time {
+            if start_time.elapsed().as_secs() >= 2 {
+                self.save_message = None;
+                self.save_message_time = None;
+            }
+        }
+
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
-                AppEvent::TransferProgress { id, bytes } => {
-                    if let Some(task) = self.active_transfers.iter_mut().find(|t| t.id == id) {
+                AppEvent::TaskProgress { id, bytes } => {
+                    if let Some(task) = self.active_tasks.iter_mut().find(|t| t.id == id) {
                         task.bytes_transferred += bytes;
                     }
                 }
-                AppEvent::TransferFinished { id, result } => {
-                    if let Some(task) = self.active_transfers.iter().find(|t| t.id == id) {
-                        self.last_finished_transfer = Some(FinishedTransfer {
-                            filename: task.filename.clone(),
-                            target_path: task.target_path.clone(),
-                            is_upload: task.is_upload,
+                AppEvent::TaskFinished { id, result } => {
+                    if let Some(task) = self.active_tasks.iter().find(|t| t.id == id) {
+                        let finished = FinishedTask {
+                            description: task.description.clone(),
+                            task_type: task.task_type.clone(),
                             result: result.clone(),
-                        });
+                            end_time: std::time::Instant::now(),
+                        };
+                        self.last_finished_task = Some(finished.clone());
+                        self.session_tasks.push(finished);
+                        
+                        // Auto-refresh for certain operations
+                        if (task.task_type == TaskType::Upload || 
+                            task.task_type == TaskType::CreateFolder || 
+                            task.task_type == TaskType::Delete) && result.is_ok() {
+                            let _ = self.event_tx.send(AppEvent::RequestRefresh);
+                        }
                     }
-                    self.active_transfers.retain(|t| t.id != id);
+                    self.active_tasks.retain(|t| t.id != id);
                     if let Err(e) = result {
-                        self.set_error(format!("Transfer failed: {}", e));
+                        self.set_error(format!("Operation failed: {}", e));
                     }
+                }
+                AppEvent::RequestRefresh => {
+                    self.refresh_objects().await;
                 }
             }
         }
     }
 
-    pub async fn on_key(&mut self, key: crossterm::event::KeyCode) {
+    pub async fn refresh_objects(&mut self) {
+        let bucket = match &self.current_bucket {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        let provider_idx = match self.active_provider_index {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        if let Some(provider) = self.storage_providers.get(provider_idx) {
+            match provider.list_objects(&bucket, self.current_path.as_ref()).await {
+                Ok(objects) => {
+                    self.objects = objects;
+                    if !self.objects.is_empty() {
+                        if self.main_list_state.selected().is_none() {
+                            self.main_list_state.select(Some(0));
+                        }
+                    } else {
+                        self.main_list_state.select(None);
+                    }
+                    self.update_preview().await;
+                }
+                Err(e) => self.set_error(format!("Failed to refresh objects: {}", e)),
+            }
+        }
+    }
+
+    pub async fn on_event(&mut self, event: &crossterm::event::Event) {
+        match event {
+            crossterm::event::Event::Key(key) => {
+                self.handle_key(key.code, event).await;
+            }
+            crossterm::event::Event::Mouse(mouse) => {
+                if mouse.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                    if let Some(area) = self.copy_button_area {
+                        if mouse.column >= area.x && mouse.column < area.x + area.width &&
+                           mouse.row >= area.y && mouse.row < area.y + area.height {
+                            self.copy_path_to_clipboard();
+                        }
+                    }
+                    if let Some(area) = self.error_copy_area {
+                        if self.error_message.is_some() &&
+                           mouse.column >= area.x && mouse.column < area.x + area.width &&
+                           mouse.row >= area.y && mouse.row < area.y + area.height {
+                            self.copy_error_to_clipboard();
+                        }
+                    }
+                    if let Some(area) = self.task_copy_area {
+                        if mouse.column >= area.x && mouse.column < area.x + area.width &&
+                           mouse.row >= area.y && mouse.row < area.y + area.height {
+                            self.copy_task_to_clipboard();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn copy_path_to_clipboard(&mut self) {
+        let path = self.get_copy_path();
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(e) = clipboard.set_text(path) {
+                    self.set_error(format!("Failed to copy to clipboard: {}", e));
+                } else {
+                    self.save_message = Some("Path copied to clipboard!".to_string());
+                    self.save_message_time = Some(std::time::Instant::now());
+                }
+            }
+            Err(e) => self.set_error(format!("Failed to initialize clipboard: {}", e)),
+        }
+    }
+
+    fn copy_error_to_clipboard(&mut self) {
+        if let Some(error) = &self.error_message {
+            let msg = error.clone();
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    if let Err(e) = clipboard.set_text(msg) {
+                        self.set_error(format!("Failed to copy to clipboard: {}", e));
+                    } else {
+                        self.error_message = None;
+                        self.save_message = Some("Error message copied to clipboard!".to_string());
+                        self.save_message_time = Some(std::time::Instant::now());
+                    }
+                }
+                Err(e) => self.set_error(format!("Failed to initialize clipboard: {}", e)),
+            }
+        }
+    }
+
+    fn copy_task_to_clipboard(&mut self) {
+        let status_text = if let Some(last_task) = self.active_tasks.last() {
+            format!("[{}] {}", match last_task.task_type {
+                TaskType::Upload => "Upload",
+                TaskType::Download => "Download",
+                TaskType::CreateFolder => "New Folder",
+                TaskType::Delete => "Delete",
+            }, last_task.description)
+        } else if let Some(finished) = &self.last_finished_task {
+            format!("[{}] {}: {}", match finished.task_type {
+                TaskType::Upload => "Upload",
+                TaskType::Download => "Download",
+                TaskType::CreateFolder => "New Folder",
+                TaskType::Delete => "Delete",
+            }, finished.description, match &finished.result { Ok(_) => "Done", Err(e) => e })
+        } else {
+            "Ready".to_string()
+        };
+
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(e) = clipboard.set_text(status_text) {
+                    self.set_error(format!("Failed to copy task status: {}", e));
+                } else {
+                    self.save_message = Some("Task status copied to clipboard!".to_string());
+                    self.save_message_time = Some(std::time::Instant::now());
+                }
+            }
+            Err(e) => self.set_error(format!("Failed to initialize clipboard: {}", e)),
+        }
+    }
+
+    pub fn get_copy_path(&self) -> String {
+        if let Some(idx) = self.active_provider_index {
+            if let Some(provider) = self.storage_providers.get(idx) {
+                if provider.name().to_lowercase().contains("minio") {
+                    if let Some(config) = self.config.providers.get(idx) {
+                        if let Some(endpoint) = &config.endpoint {
+                            let bucket = self.current_bucket.as_deref().unwrap_or("");
+                            let path = self.current_path.as_ref().map(|p| p.to_string()).unwrap_or_default();
+                            
+                            let mut base = endpoint.clone();
+                            if !base.ends_with('/') {
+                                base.push('/');
+                            }
+                            base.push_str("browser/");
+                            if !bucket.is_empty() {
+                                base.push_str(bucket);
+                                if !path.is_empty() {
+                                    base.push('/');
+                                    base.push_str(&path);
+                                    // Minio browser expects folders to end with %2F
+                                    base.push_str("%2F");
+                                }
+                            }
+                            return base;
+                        }
+                    }
+                }
+            }
+        }
+        self.get_full_remote_path()
+    }
+
+    pub fn get_full_remote_path(&self) -> String {
+        let protocol = match self.active_provider_index {
+            Some(idx) => {
+                if let Some(provider) = self.storage_providers.get(idx) {
+                    match provider.provider_type() {
+                        crate::config::ProviderType::S3 => {
+                            if provider.name().to_lowercase().contains("minio") {
+                                "minio"
+                            } else {
+                                "s3"
+                            }
+                        }
+                        crate::config::ProviderType::GCS => "gs",
+                        crate::config::ProviderType::Azure => "azure",
+                    }
+                } else {
+                    "unknown"
+                }
+            }
+            None => "unknown",
+        };
+
+        let bucket = self.current_bucket.as_deref().unwrap_or("");
+        let path = self.current_path.as_ref().map(|p| p.to_string()).unwrap_or_default();
+        
+        if bucket.is_empty() {
+            return format!("{}://", protocol);
+        }
+        
+        if path.is_empty() {
+            return format!("{}://{}", protocol, bucket);
+        }
+        
+        format!("{}://{}/{}", protocol, bucket, path)
+    }
+
+    async fn handle_key(&mut self, key_code: crossterm::event::KeyCode, event: &crossterm::event::Event) {
         if self.pending_delete_index.is_some() {
-            match key {
+            match key_code {
                 crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
                     if let Some(index) = self.pending_delete_index {
                         if let Some(state) = &mut self.config_modal_state {
@@ -242,6 +501,7 @@ impl App {
                              } else {
                                  self.refresh_storage_providers().await;
                                  self.save_message = Some("Provider deleted successfully.".to_string());
+                                 self.save_message_time = Some(std::time::Instant::now());
                              }
                         }
                     }
@@ -257,21 +517,26 @@ impl App {
         }
 
         if self.error_message.is_some() || self.save_message.is_some() {
-             match key {
+             match key_code {
                 crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Enter => {
                     self.error_message = None;
                     self.save_message = None;
+                    self.save_message_time = None;
                     return;
                 }
                 _ => {
-                    self.error_message = None;
-                    self.save_message = None;
+                    // Don't auto-dismiss error on key press, but maybe save_message?
+                    // Actually, keep current behavior but clear time.
+                    if self.save_message.is_some() {
+                        self.save_message = None;
+                        self.save_message_time = None;
+                    }
                 }
             }
         }
 
         match self.input_mode {
-            InputMode::Normal => match key {
+            InputMode::Normal => match key_code {
                 crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
                     if self.show_config_modal {
                         self.show_config_modal = false;
@@ -290,16 +555,32 @@ impl App {
                         self.input_mode = InputMode::Search;
                     }
                 }
+                crossterm::event::KeyCode::Char('y') => {
+                    if self.active_pane == Pane::Main {
+                        self.copy_path_to_clipboard();
+                    }
+                }
+                crossterm::event::KeyCode::Char('n') => {
+                    if self.active_pane == Pane::Main && self.current_bucket.is_some() {
+                        self.input_mode = InputMode::CreateFolderPrompt;
+                        self.prompt_input = String::new();
+                    }
+                }
                 crossterm::event::KeyCode::Char('d') => {
                     if self.active_pane == Pane::Main && (!self.selected_paths.is_empty() || self.main_list_state.selected().is_some()) {
                         self.input_mode = InputMode::DownloadPrompt;
                         self.prompt_input = String::new();
+                        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                        let _ = self.file_explorer.set_cwd(home_dir);
                     }
                 }
                 crossterm::event::KeyCode::Char('u') => {
                     if self.active_pane == Pane::Main && self.current_bucket.is_some() {
                         self.input_mode = InputMode::UploadPrompt;
                         self.prompt_input = String::new();
+                        // Reset file explorer to home directory
+                        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                        let _ = self.file_explorer.set_cwd(home_dir);
                     }
                 }
                 crossterm::event::KeyCode::Char('x') | crossterm::event::KeyCode::Delete => {
@@ -386,9 +667,24 @@ impl App {
                         self.config.providers = state.providers.clone();
                         match self.config.save() {
                             Ok(_) => {
+                                // Check if the active provider was disabled
+                                let active_disabled = self.active_provider_index
+                                    .and_then(|idx| self.config.providers.get(idx))
+                                    .is_some_and(|p| !p.enabled);
                                 self.refresh_storage_providers().await;
+                                if active_disabled {
+                                    self.active_provider_index = None;
+                                    self.current_bucket = None;
+                                    self.current_path = None;
+                                    self.objects.clear();
+                                    self.selected_paths.clear();
+                                    self.search_query.clear();
+                                    self.main_list_state.select(None);
+                                    self.preview_data = None;
+                                }
                                 let config_path = dirs::home_dir().unwrap().join(".config").join("stuie").join("config.json");
                                 self.save_message = Some(format!("Configuration saved to {}!", config_path.display()));
+                                self.save_message_time = Some(std::time::Instant::now());
                             }
                             Err(e) => self.set_error(format!("Failed to save config: {}", e)),
                         }
@@ -399,38 +695,9 @@ impl App {
                 }
                 crossterm::event::KeyCode::Enter => {
                     if self.show_config_modal {
-                        let mut provider_to_activate = None;
-                        if let Some(state) = &self.config_modal_state {
-                            provider_to_activate = Some(state.selected_provider_index);
-                        }
-
-                        if let Some(idx) = provider_to_activate {
-                            if let Some(provider) = self.storage_providers.get(idx) {
-                                let provider_name = provider.name().to_string();
-                                match provider.list_buckets().await {
-                                    Ok(_) => {
-                                        // Successful connection, refresh to ensure buckets are loaded
-                                        self.refresh_storage_providers().await;
-                                        self.active_provider_index = Some(idx);
-                                        // Expand this provider
-                                        self.expanded_providers.insert(idx);
-                                        // Find first bucket of this provider to select it
-                                        let items = self.sidebar_items();
-                                        if let Some(item_idx) = items.iter().position(|item| {
-                                            match item {
-                                                SidebarItem::Bucket { provider_index, .. } => *provider_index == idx,
-                                                _ => false,
-                                            }
-                                        }) {
-                                            self.sidebar_state.select(Some(item_idx));
-                                            self.save_message = Some(format!("Connection to '{}' successful! Buckets loaded.", provider_name));
-                                            self.on_enter().await;
-                                        } else {
-                                            self.save_message = Some(format!("Connection to '{}' successful, but no buckets found.", provider_name));
-                                        }
-                                    }
-                                    Err(e) => self.set_error(format!("Connection failed: {}", e)),
-                                }
+                        if let Some(state) = &mut self.config_modal_state {
+                            if let Some(provider) = state.providers.get_mut(state.selected_provider_index) {
+                                provider.enabled = !provider.enabled;
                             }
                         }
                     } else {
@@ -444,7 +711,7 @@ impl App {
                 }
                 _ => {}
             },
-            InputMode::Editing => match key {
+            InputMode::Editing => match key_code {
                 crossterm::event::KeyCode::Esc => {
                     self.input_mode = InputMode::Normal;
                     if let Some(state) = &mut self.config_modal_state {
@@ -532,7 +799,7 @@ impl App {
                 }
                 _ => {}
             }
-            InputMode::Search => match key {
+            InputMode::Search => match key_code {
                 crossterm::event::KeyCode::Esc => {
                     self.search_query.clear();
                     self.input_mode = InputMode::Normal;
@@ -553,39 +820,51 @@ impl App {
                 }
                 _ => {}
             }
-            InputMode::DownloadPrompt => match key {
+            InputMode::DownloadPrompt => match key_code {
                 crossterm::event::KeyCode::Esc => {
                     self.input_mode = InputMode::Normal;
                 }
                 crossterm::event::KeyCode::Enter => {
-                    self.start_download().await;
-                    self.input_mode = InputMode::Normal;
+                    let current = self.file_explorer.current().path.to_owned();
+                    if current.is_dir() {
+                        self.prompt_input = current.to_string_lossy().to_string();
+                        self.start_download().await;
+                        self.input_mode = InputMode::Normal;
+                    } else {
+                        // If a file is selected, use its parent directory
+                        if let Some(parent) = current.parent() {
+                            self.prompt_input = parent.to_string_lossy().to_string();
+                            self.start_download().await;
+                            self.input_mode = InputMode::Normal;
+                        } else {
+                            let _ = self.file_explorer.handle(event);
+                        }
+                    }
                 }
-                crossterm::event::KeyCode::Backspace => {
-                    self.prompt_input.pop();
+                _ => {
+                    let _ = self.file_explorer.handle(event);
                 }
-                crossterm::event::KeyCode::Char(c) => {
-                    self.prompt_input.push(c);
-                }
-                _ => {}
             }
-            InputMode::UploadPrompt => match key {
+            InputMode::UploadPrompt => match key_code {
                 crossterm::event::KeyCode::Esc => {
                     self.input_mode = InputMode::Normal;
                 }
                 crossterm::event::KeyCode::Enter => {
-                    self.start_upload().await;
-                    self.input_mode = InputMode::Normal;
+                    let current = self.file_explorer.current().path.to_owned();
+                    if current.is_file() {
+                        self.prompt_input = current.to_string_lossy().to_string();
+                        self.start_upload().await;
+                        self.input_mode = InputMode::Normal;
+                    } else {
+                        let _ = self.file_explorer.handle(event);
+                    }
                 }
-                crossterm::event::KeyCode::Backspace => {
-                    self.prompt_input.pop();
+
+                _ => {
+                    let _ = self.file_explorer.handle(event);
                 }
-                crossterm::event::KeyCode::Char(c) => {
-                    self.prompt_input.push(c);
-                }
-                _ => {}
             }
-            InputMode::DeleteConfirmation => match key {
+            InputMode::DeleteConfirmation => match key_code {
                 crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
                     self.start_batch_delete().await;
                     self.input_mode = InputMode::Normal;
@@ -594,8 +873,72 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
                 _ => {}
+            },
+            InputMode::CreateFolderPrompt => match key_code {
+                crossterm::event::KeyCode::Esc => {
+                    self.input_mode = InputMode::Normal;
+                }
+                crossterm::event::KeyCode::Enter => {
+                    if !self.prompt_input.trim().is_empty() {
+                        self.create_folder().await;
+                    }
+                    self.input_mode = InputMode::Normal;
+                }
+                crossterm::event::KeyCode::Backspace => {
+                    self.prompt_input.pop();
+                }
+                crossterm::event::KeyCode::Char(c) => {
+                    self.prompt_input.push(c);
+                }
+                _ => {}
             }
         }
+    }
+
+    async fn create_folder(&mut self) {
+        let bucket = match &self.current_bucket {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        let provider_idx = match self.active_provider_index {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        let folder_name = self.prompt_input.trim().to_string();
+        let folder_path = if let Some(p) = &self.current_path {
+            let mut path_str = p.to_string();
+            if !path_str.is_empty() && !path_str.ends_with('/') {
+                path_str.push('/');
+            }
+            path_str.push_str(&folder_name);
+            object_store::path::Path::from(path_str)
+        } else {
+            object_store::path::Path::from(folder_name.clone())
+        };
+
+        let provider = self.storage_providers[provider_idx].clone_box();
+        let event_tx = self.event_tx.clone();
+        let id = format!("create_folder_{}_{}", bucket, folder_path);
+        
+        let task = AppTask {
+            id: id.clone(),
+            description: format!("Creating folder: {}", folder_name),
+            task_type: TaskType::CreateFolder,
+            bytes_transferred: 0,
+            total_size: 0,
+            start_time: std::time::Instant::now(),
+        };
+        self.active_tasks.push(task);
+
+        tokio::spawn(async move {
+            let result = provider.create_folder(&bucket, &folder_path).await;
+            let _ = event_tx.send(AppEvent::TaskFinished {
+                id,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
     }
 
     async fn start_batch_delete(&mut self) {
@@ -628,27 +971,29 @@ impl App {
             _ => return,
         };
 
-        if let Some(provider) = self.storage_providers.get(provider_idx) {
-            match provider.delete_objects(&bucket, &paths_to_delete).await {
-                Ok(_) => {
-                    self.save_message = Some(format!("Successfully deleted {} objects.", paths_to_delete.len()));
-                    self.selected_paths.clear();
-                    // Refresh objects
-                    if let Some(provider) = self.storage_providers.get(provider_idx) {
-                        if let Ok(objects) = provider.list_objects(&bucket, self.current_path.as_ref()).await {
-                            self.objects = objects;
-                            if !self.objects.is_empty() {
-                                self.main_list_state.select(Some(0));
-                            } else {
-                                self.main_list_state.select(None);
-                            }
-                            self.update_preview().await;
-                        }
-                    }
-                }
-                Err(e) => self.set_error(format!("Failed to delete objects: {}", e)),
-            }
-        }
+        let provider = self.storage_providers[provider_idx].clone_box();
+        let event_tx = self.event_tx.clone();
+        let item_count = paths_to_delete.len();
+        let id = format!("delete_{}", std::time::Instant::now().elapsed().as_nanos());
+        
+        let task = AppTask {
+            id: id.clone(),
+            description: format!("Deleting {} items", item_count),
+            task_type: TaskType::Delete,
+            bytes_transferred: 0,
+            total_size: 0,
+            start_time: std::time::Instant::now(),
+        };
+        self.active_tasks.push(task);
+
+        tokio::spawn(async move {
+            let result = provider.delete_objects(&bucket, &paths_to_delete).await;
+            let _ = event_tx.send(AppEvent::TaskFinished {
+                id,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
+        self.selected_paths.clear();
     }
 
     async fn on_enter(&mut self) {
@@ -662,11 +1007,53 @@ impl App {
                                 if self.expanded_providers.contains(p_idx) {
                                     self.expanded_providers.remove(p_idx);
                                 } else {
-                                    self.expanded_providers.insert(*p_idx);
+                                    if let Some(provider) = self.storage_providers.get(*p_idx) {
+                                        let provider_name = provider.name().to_string();
+                                        match provider.list_buckets().await {
+                                            Ok(_) => {
+                                                self.refresh_storage_providers().await;
+                                                self.active_provider_index = Some(*p_idx);
+                                                self.expanded_providers.insert(*p_idx);
+                                                let items = self.sidebar_items();
+                                                if let Some((item_idx, bucket_item)) = items.iter().enumerate().find(|(_, item)| {
+                                                    matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == *p_idx)
+                                                }) {
+                                                    // Auto-select the first bucket
+                                                    if let SidebarItem::Bucket { provider_index, name } = bucket_item {
+                                                        self.sidebar_state.select(Some(item_idx));
+                                                        self.current_bucket = Some(name.clone());
+                                                        self.current_path = None;
+                                                        self.search_query.clear();
+                                                        if let Some(provider) = self.storage_providers.get(*provider_index) {
+                                                            match provider.list_objects(name, None).await {
+                                                                Ok(objects) => {
+                                                                    self.objects = objects;
+                                                                    if !self.objects.is_empty() {
+                                                                        self.main_list_state.select(Some(0));
+                                                                    } else {
+                                                                        self.main_list_state.select(None);
+                                                                    }
+                                                                    self.update_preview().await;
+                                                                }
+                                                                Err(e) => self.set_error(format!("Failed to list objects in {}: {}", name, e)),
+                                                            }
+                                                        }
+                                                    }
+                                                    self.save_message = Some(format!("Connected to '{}'", provider_name));
+                                                    self.save_message_time = Some(std::time::Instant::now());
+                                                } else {
+                                                    self.save_message = Some(format!("Connected to '{}', but no buckets found.", provider_name));
+                                                    self.save_message_time = Some(std::time::Instant::now());
+                                                }
+                                            }
+                                            Err(e) => self.set_error(format!("Connection to '{}' failed: {}", provider_name, e)),
+                                        }
+                                    }
                                 }
                             }
                             SidebarItem::Bucket { provider_index, name } => {
                                 if let Some(provider) = self.storage_providers.get(*provider_index) {
+                                    self.active_provider_index = Some(*provider_index);
                                     self.current_bucket = Some(name.clone());
                                     self.current_path = None;
                                     self.search_query.clear();
@@ -727,6 +1114,7 @@ impl App {
     async fn on_back(&mut self) {
         if let Some(bucket_name) = &self.current_bucket {
             if let Some(path) = &self.current_path {
+                let to_highlight = path.clone();
                 let parent = path.parent();
                 if let Some(sidebar_index) = self.sidebar_state.selected() {
                     let items = self.sidebar_items();
@@ -737,8 +1125,15 @@ impl App {
                                     self.current_path = parent.map(|p| p.to_owned());
                                     self.objects = objects;
                                     self.search_query.clear();
+                                    
+                                    // Try to find the previous folder in the new list
+                                    let mut new_index = 0;
+                                    if let Some(idx) = self.objects.iter().position(|obj| obj.path == to_highlight) {
+                                        new_index = idx;
+                                    }
+
                                     if !self.objects.is_empty() {
-                                        self.main_list_state.select(Some(0));
+                                        self.main_list_state.select(Some(new_index));
                                     } else {
                                         self.main_list_state.select(None);
                                     }
@@ -869,18 +1264,6 @@ impl App {
             None => return,
         };
 
-        let mut paths_to_download = Vec::new();
-        if !self.selected_paths.is_empty() {
-            paths_to_download.extend(self.selected_paths.iter().cloned());
-        } else if let Some(index) = self.main_list_state.selected() {
-            let filtered = self.filtered_objects();
-            if let Some(obj) = filtered.get(index) {
-                if !obj.is_dir {
-                    paths_to_download.push(obj.path.clone());
-                }
-            }
-        }
-
         let sidebar_index = match self.sidebar_state.selected() {
             Some(i) => i,
             None => return,
@@ -891,43 +1274,137 @@ impl App {
             _ => return,
         };
 
-        for path in paths_to_download {
-            let bucket_inner = bucket.clone();
-            let filename = path.filename().unwrap_or(path.as_ref()).to_string();
-            let local_path = local_base_path.join(&filename);
-            let id = format!("download_{}_{}", bucket_inner, path);
-            
-            // Find total size
-            let total_size = self.objects.iter().find(|o| o.path == path).map(|o| o.size).unwrap_or(0);
+        // Collect selected items (files and folders)
+        let mut selected_objects = Vec::new();
+        if !self.selected_paths.is_empty() {
+            for path in &self.selected_paths {
+                let is_dir = self.objects.iter().any(|o| o.path == *path && o.is_dir);
+                selected_objects.push((path.clone(), is_dir));
+            }
+        } else if let Some(index) = self.main_list_state.selected() {
+            let filtered = self.filtered_objects();
+            if let Some(obj) = filtered.get(index) {
+                selected_objects.push((obj.path.clone(), obj.is_dir));
+            }
+        }
 
-            let task = TransferTask {
-                id: id.clone(),
-                filename: filename.clone(),
-                is_upload: false,
-                bytes_transferred: 0,
-                total_size,
-                start_time: std::time::Instant::now(),
-                target_path: local_path.to_string_lossy().to_string(),
-            };
-            self.active_transfers.push(task);
+        let provider = &self.storage_providers[provider_idx];
+        for (path, is_dir) in &selected_objects {
+            if *is_dir {
+                // Folder download: single task for the entire folder
+                let folder_name = path.filename().unwrap_or(path.as_ref()).to_string();
+                let files: Vec<(ObjectPath, std::path::PathBuf, u64)> = match provider.list_objects_recursive(&bucket, Some(path)).await {
+                    Ok(objects) => {
+                        objects.into_iter().filter_map(|obj| {
+                            let rel = obj.path.as_ref().strip_prefix(path.as_ref())
+                                .unwrap_or(obj.path.as_ref())
+                                .trim_start_matches('/');
+                            if rel.is_empty() {
+                                return None;
+                            }
+                            let local_path = local_base_path.join(&folder_name).join(rel);
+                            Some((obj.path, local_path, obj.size))
+                        }).collect()
+                    }
+                    Err(e) => {
+                        self.set_error(format!("Failed to list folder {}: {}", folder_name, e));
+                        return;
+                    }
+                };
 
-            let provider = self.storage_providers[provider_idx].clone_box();
-            let event_tx = self.event_tx.clone();
-            let task_id = id.clone();
+                if files.is_empty() {
+                    continue;
+                }
 
-            tokio::spawn(async move {
-                let event_tx_inner = event_tx.clone();
-                let task_id_inner = task_id.clone();
-                let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                    let _ = event_tx_inner.send(AppEvent::TransferProgress { id: task_id_inner.clone(), bytes });
+                let total_size: u64 = files.iter().map(|(_, _, size)| size).sum();
+                let id = format!("download_{}_{}", bucket, path);
+                let task = AppTask {
+                    id: id.clone(),
+                    description: format!("Downloading {}/", folder_name),
+                    task_type: TaskType::Download,
+                    bytes_transferred: 0,
+                    total_size,
+                    start_time: std::time::Instant::now(),
+                };
+                self.active_tasks.push(task);
+
+                let file_count = files.len();
+                let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(file_count));
+                let first_error: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
+
+                for (obj_path, local_path, _) in files {
+                    let provider = self.storage_providers[provider_idx].clone_box();
+                    let event_tx = self.event_tx.clone();
+                    let task_id = id.clone();
+                    let bucket_inner = bucket.clone();
+                    let remaining = remaining.clone();
+                    let first_error = first_error.clone();
+
+                    tokio::spawn(async move {
+                        let event_tx_inner = event_tx.clone();
+                        let task_id_inner = task_id.clone();
+                        let progress_cb: ProgressCallback = Arc::new(move |bytes| {
+                            let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                        });
+
+                        let result = provider.download(&bucket_inner, &obj_path, &local_path, progress_cb).await;
+                        if let Err(e) = &result {
+                            let mut err = first_error.lock().await;
+                            if err.is_none() {
+                                *err = Some(e.to_string());
+                            }
+                        }
+
+                        if remaining.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                            let err = first_error.lock().await;
+                            let result = match &*err {
+                                Some(e) => Err(e.clone()),
+                                None => Ok(()),
+                            };
+                            let _ = event_tx.send(AppEvent::TaskFinished {
+                                id: task_id,
+                                result,
+                            });
+                        }
+                    });
+                }
+            } else {
+                // Single file download
+                let filename = path.filename().unwrap_or(path.as_ref()).to_string();
+                let local_path = local_base_path.join(&filename);
+                let bucket_inner = bucket.clone();
+                let id = format!("download_{}_{}", bucket_inner, path);
+                let total_size = self.objects.iter().find(|o| o.path == *path).map(|o| o.size).unwrap_or(0);
+
+                let task = AppTask {
+                    id: id.clone(),
+                    description: format!("Downloading {}", filename),
+                    task_type: TaskType::Download,
+                    bytes_transferred: 0,
+                    total_size,
+                    start_time: std::time::Instant::now(),
+                };
+                self.active_tasks.push(task);
+
+                let provider = self.storage_providers[provider_idx].clone_box();
+                let event_tx = self.event_tx.clone();
+                let task_id = id.clone();
+                let path = path.clone();
+
+                tokio::spawn(async move {
+                    let event_tx_inner = event_tx.clone();
+                    let task_id_inner = task_id.clone();
+                    let progress_cb: ProgressCallback = Arc::new(move |bytes| {
+                        let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                    });
+
+                    let result = provider.download(&bucket_inner, &path, &local_path, progress_cb).await;
+                    let _ = event_tx.send(AppEvent::TaskFinished {
+                        id: task_id,
+                        result: result.map_err(|e| e.to_string())
+                    });
                 });
-
-                let result = provider.download(&bucket_inner, &path, &local_path, progress_cb).await;
-                let _ = event_tx.send(AppEvent::TransferFinished { 
-                    id: task_id, 
-                    result: result.map_err(|e| e.to_string()) 
-                });
-            });
+            }
         }
         self.selected_paths.clear();
     }
@@ -964,16 +1441,15 @@ impl App {
         let total_size = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
         let id = format!("upload_{}_{}", bucket, remote_path);
 
-        let task = TransferTask {
+        let task = AppTask {
             id: id.clone(),
-            filename: filename.clone(),
-            is_upload: true,
+            description: format!("Uploading {}", filename),
+            task_type: TaskType::Upload,
             bytes_transferred: 0,
             total_size,
             start_time: std::time::Instant::now(),
-            target_path: remote_path.to_string(),
         };
-        self.active_transfers.push(task);
+        self.active_tasks.push(task);
 
         let provider = self.storage_providers[provider_idx].clone_box();
         let event_tx = self.event_tx.clone();
@@ -983,11 +1459,11 @@ impl App {
             let event_tx_inner = event_tx.clone();
             let task_id_inner = task_id.clone();
             let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                let _ = event_tx_inner.send(AppEvent::TransferProgress { id: task_id_inner.clone(), bytes });
+                let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
             });
 
             let result = provider.upload(&bucket, &remote_path, &local_path, progress_cb).await;
-            let _ = event_tx.send(AppEvent::TransferFinished { 
+            let _ = event_tx.send(AppEvent::TaskFinished { 
                 id: task_id, 
                 result: result.map_err(|e| e.to_string()) 
             });

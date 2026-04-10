@@ -8,7 +8,7 @@ pub struct Config {
     pub providers: Vec<ProviderConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProviderConfig {
     pub name: String,
     pub provider_type: ProviderType,
@@ -19,6 +19,29 @@ pub struct ProviderConfig {
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<String>,
     pub allow_http: Option<bool>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            provider_type: ProviderType::default(),
+            credentials_path: None,
+            region: None,
+            bucket_name: None,
+            endpoint: None,
+            access_key_id: None,
+            secret_access_key: None,
+            allow_http: None,
+            enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]

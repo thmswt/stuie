@@ -31,9 +31,11 @@ pub trait StorageBackend: Send + Sync {
     fn provider_type(&self) -> ProviderType;
     async fn list_buckets(&self) -> Result<Vec<Bucket>>;
     async fn list_objects(&self, bucket: &str, prefix: Option<&Path>) -> Result<Vec<Object>>;
+    async fn list_objects_recursive(&self, bucket: &str, prefix: Option<&Path>) -> Result<Vec<Object>>;
     async fn get_object_preview(&self, bucket: &str, path: &Path, max_bytes: usize) -> Result<bytes::Bytes>;
     async fn download(&self, bucket: &str, path: &Path, local_path: &std::path::Path, progress_cb: ProgressCallback) -> Result<()>;
     async fn upload(&self, bucket: &str, path: &Path, local_path: &std::path::Path, progress_cb: ProgressCallback) -> Result<()>;
+    async fn create_folder(&self, bucket: &str, path: &Path) -> Result<()>;
     async fn delete_objects(&self, bucket: &str, paths: &[Path]) -> Result<()>;
     fn clone_box(&self) -> Box<dyn StorageBackend>;
 }

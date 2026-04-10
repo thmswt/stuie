@@ -1,10 +1,11 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Table, Row, Cell, Wrap},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Table, Row, Cell, Wrap, WidgetRef},
     Frame,
 };
-use crate::app::{App, Pane, InputMode};
+use crate::app::{App, Pane, InputMode, TaskType};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -26,17 +27,31 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
         .split(chunks[0]);
 
-    let current_path_str = app.current_path.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "/".to_string());
+    let full_path = app.get_full_remote_path();
+    // Max width for path: chunk width - borders(2) - leading space(1) - trailing space(1) - icon(2)
+    let max_path_width = top_chunks[0].width.saturating_sub(6);
+    let shortened_path = shorten_path(&full_path, max_path_width as usize);
+    
     let path_block = Block::default().borders(Borders::ALL).title(" Path ");
-    let path_para = Paragraph::new(format!(" {}", current_path_str)).block(path_block);
+    let path_line = Line::from(vec![
+        Span::raw(format!(" {}", shortened_path)),
+        Span::raw(" "),
+        Span::styled("📋", Style::default().fg(Color::Cyan)),
+    ]);
+    let path_para = Paragraph::new(path_line).block(path_block);
     f.render_widget(path_para, top_chunks[0]);
+
+    // Save copy button area
+    let icon_x = top_chunks[0].x + 3 + shortened_path.len() as u16;
+    app.copy_button_area = Some(Rect::new(icon_x, top_chunks[0].y + 1, 2, 1));
 
     let is_search = matches!(app.input_mode, InputMode::Search);
     let search_title = if is_search { " Filter (Esc to exit) " } else { " Filter ('/' to edit) " };
     let search_block = Block::default()
         .borders(Borders::ALL)
         .title(search_title)
-        .border_style(if is_search { Style::default().fg(Color::Yellow) } else { Style::default() });
+        .border_style(if is_search { Style::default().fg(Color::Yellow) } else { Style::default() })
+        .border_type(if is_search { BorderType::Thick } else { BorderType::Plain });
     
     let search_text = if is_search {
         format!("{}|", app.search_query)
@@ -77,23 +92,26 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 }
                 crate::app::SidebarItem::Bucket { name, .. } => {
                     ListItem::new(format!("  \u{25cf} {}", name))
+                        .style(Style::default().fg(Color::Cyan))
                 }
             }
         })
         .collect();
 
+    let is_sidebar_active = app.active_pane == Pane::Sidebar;
     let sidebar_block = Block::default()
         .borders(Borders::ALL)
         .title(" Buckets ")
-        .border_style(if app.active_pane == Pane::Sidebar {
+        .border_style(if is_sidebar_active {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
-        });
+        })
+        .border_type(if is_sidebar_active { BorderType::Thick } else { BorderType::Plain });
 
     let sidebar_list = List::new(sidebar_items)
         .block(sidebar_block)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray).fg(Color::Yellow))
         .highlight_symbol("> ");
     f.render_stateful_widget(sidebar_list, middle_chunks[0], &mut app.sidebar_state);
 
@@ -102,15 +120,23 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let filtered_objects = app.filtered_objects();
         
         // Render Main List Table
+        let is_main_active = app.active_pane == Pane::Main;
+        let is_normal_mode = matches!(app.input_mode, InputMode::Normal);
+        
         let main_block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" Objects ({}) ", filtered_objects.len()))
-            .border_style(if app.active_pane == Pane::Main && !matches!(app.input_mode, InputMode::Normal) {
+            .border_style(if is_main_active && !is_normal_mode {
                 Style::default()
-            } else if app.active_pane == Pane::Main {
+            } else if is_main_active {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
+            })
+            .border_type(if is_main_active && is_normal_mode { 
+                BorderType::Thick 
+            } else { 
+                BorderType::Plain 
             });
 
         let header_cells = ["Name", "Size", "Modified"]
@@ -128,12 +154,17 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
             
             let name = format!("{} {}", checkbox, display_name);
+            let style = if obj.is_dir {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
             
             Row::new(vec![
                 Cell::from(name),
                 Cell::from(format_size(obj.size)),
                 Cell::from(obj.last_modified.format("%Y-%m-%d %H:%M").to_string()),
-            ])
+            ]).style(style)
         }).collect();
 
         let main_table = Table::new(rows, [
@@ -143,7 +174,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         ])
         .header(header)
         .block(main_block)
-        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray))
+        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray).fg(Color::Yellow))
         .highlight_symbol("> ");
         
         // Preview Pane preparation
@@ -192,39 +223,67 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // Bottom Bar
-    let keybindings = " Help: ? | Filter: / | Select: Space | Download: d | Upload: u | Delete: x | Config: c | Switch: Tab ";
-    let status_text = if let Some(last_transfer) = app.active_transfers.last() {
-        let percent = if last_transfer.total_size > 0 {
-            (last_transfer.bytes_transferred * 100) / last_transfer.total_size
-        } else {
-            0
-        };
-        let speed = last_transfer.bytes_transferred as f64 / last_transfer.start_time.elapsed().as_secs_f64();
-        format!(
-            " [{}] {}: [{}%] ({}/s)",
-            if last_transfer.is_upload { "Upload" } else { "Download" },
-            last_transfer.filename,
-            percent,
-            format_size(speed as u64)
-        )
-    } else if let Some(finished) = &app.last_finished_transfer {
-        match &finished.result {
-            Ok(_) => {
-                let transfer_type = if finished.is_upload { "Upload" } else { "Download" };
-                format!(" Finished {}: {} to {}", transfer_type, finished.filename, finished.target_path)
+    let keybindings = " Quit: q | Help: ? | Filter: / | Select: Space | Copy Path: y | New Folder: n | Download: d | Upload: u | Delete: x | Config: c | Switch: Tab ";
+    let status_text = if let Some(last_task) = app.active_tasks.last() {
+        match last_task.task_type {
+            TaskType::Upload | TaskType::Download => {
+                let percent = if last_task.total_size > 0 {
+                    (last_task.bytes_transferred * 100) / last_task.total_size
+                } else {
+                    0
+                };
+                let elapsed = last_task.start_time.elapsed().as_secs_f64();
+                let speed = if elapsed > 0.0 {
+                    last_task.bytes_transferred as f64 / elapsed
+                } else {
+                    0.0
+                };
+                format!(
+                    " [{}] {}: [{}%] ({}/s)",
+                    if last_task.task_type == TaskType::Upload { "Upload" } else { "Download" },
+                    last_task.description,
+                    percent,
+                    format_size(speed as u64)
+                )
             }
-            Err(e) => format!(" Failed: {} ({})", finished.filename, e),
+            TaskType::CreateFolder => format!(" [New Folder] {}", last_task.description),
+            TaskType::Delete => format!(" [Delete] {}", last_task.description),
         }
+    } else if let Some(finished) = &app.last_finished_task {
+        let result_str = match &finished.result {
+            Ok(_) => "Done",
+            Err(e) => e,
+        };
+        format!(
+            " [{}] {}: {}",
+            match finished.task_type {
+                TaskType::Upload => "Upload",
+                TaskType::Download => "Download",
+                TaskType::CreateFolder => "New Folder",
+                TaskType::Delete => "Delete",
+            },
+            finished.description,
+            result_str
+        )
     } else {
         " Ready".to_string()
     };
 
-    let bottom_bar = Paragraph::new(status_text)
+    let bottom_line = Line::from(vec![
+        Span::raw(status_text.clone()),
+        Span::raw(" "),
+        Span::styled("📋", Style::default().fg(Color::Cyan)),
+    ]);
+    let bottom_bar = Paragraph::new(bottom_line)
         .block(Block::default()
             .title(" Task ")
             .borders(Borders::ALL)
         );
     f.render_widget(bottom_bar, chunks[2]);
+
+    // Save task copy area
+    let task_icon_x = chunks[2].x + 1 + status_text.len() as u16 + 1;
+    app.task_copy_area = Some(Rect::new(task_icon_x, chunks[2].y + 1, 2, 1));
 
     let keybindings_para = Paragraph::new(keybindings)
         .style(Style::default().fg(Color::Gray));
@@ -237,13 +296,16 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     match app.input_mode {
         InputMode::DownloadPrompt => {
-            render_prompt(f, " Download to (local path) ", &app.prompt_input);
+            render_file_explorer(f, app, " Download to (Enter: Select Dir, l: Enter Dir, h: Parent, Esc: Cancel) ");
         }
         InputMode::UploadPrompt => {
-            render_prompt(f, " Upload from (local path) ", &app.prompt_input);
+            render_file_explorer(f, app, " Select file to upload (Enter: Select, l: Enter Dir, h: Parent, Esc: Cancel) ");
         }
         InputMode::DeleteConfirmation => {
             render_delete_confirmation(f, app);
+        }
+        InputMode::CreateFolderPrompt => {
+            render_prompt(f, " New Folder Name ", &app.prompt_input);
         }
         _ => {}
     }
@@ -289,6 +351,8 @@ Navigation:
 
 Actions:
   Space     : Select/Deselect object
+  y         : Copy current path to clipboard
+  n         : Create new folder
   d         : Download selected objects
   u         : Upload local file to current folder
   x/Delete  : Delete selected objects
@@ -301,16 +365,30 @@ Actions:
     }
 
     if let Some(error) = &app.error_message {
-        let area = centered_rect(60, 20, f.area());
+        let area = centered_rect(60, 40, f.area());
         f.render_widget(Clear, area);
         let block = Block::default()
             .title(" Error ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Red));
-        let paragraph = Paragraph::new(error.as_str())
-            .block(block)
+        
+        let inner_area = block.inner(area);
+        f.render_widget(block, area);
+
+        let error_line = Line::from(vec![
+            Span::styled("📋", Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
+            Span::raw(error.as_str()),
+        ]);
+        
+        let paragraph = Paragraph::new(error_line)
+            .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::Red));
-        f.render_widget(paragraph, area);
+        
+        f.render_widget(paragraph, inner_area);
+
+        // Save error copy area (icon is at start of inner area)
+        app.error_copy_area = Some(Rect::new(inner_area.x, inner_area.y, 2, 1));
     }
 }
 
@@ -380,20 +458,17 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
     if let Some(state) = &app.config_modal_state {
         // Providers List (Left)
         let providers: Vec<ListItem> = state.providers.iter().enumerate().map(|(i, p)| {
-            let is_active = app.active_provider_index == Some(i);
-            let mut label = format!("{}. {}", i + 1, if p.name.is_empty() { "(unnamed)" } else { &p.name });
-            if is_active {
-                label = format!("{} [ACTIVE]", label);
-            }
-            
+            let status = if p.enabled { "[ENABLED]" } else { "[DISABLED]" };
+            let label = format!("{}. {} {}", i + 1, if p.name.is_empty() { "(unnamed)" } else { &p.name }, status);
+
             let style = if i == state.selected_provider_index && !state.edit_mode {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else if i == state.selected_provider_index {
                 Style::default().fg(Color::Yellow)
-            } else if is_active {
-                Style::default().fg(Color::Cyan)
+            } else if p.enabled {
+                Style::default().fg(Color::Green)
             } else {
-                Style::default()
+                Style::default().fg(Color::DarkGray)
             };
             ListItem::new(label).style(style)
         }).collect();
@@ -480,7 +555,7 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
 [Normal Mode]
   j/k or \u{2191}/\u{2193}: Navigate providers |  e/Enter: Edit fields
   a: Add provider          |  D: Delete provider
-  s: Save configuration    |  Enter (on list): Activate
+  s: Save configuration    |  Enter: Toggle enabled/disabled
   c: Close without saving
 
 [Editing Mode]
@@ -562,4 +637,49 @@ fn format_hex(data: &[u8]) -> String {
         lines.push(format!("{:48} | {}", hex.join(" "), ascii));
     }
     lines.join("\n")
+}
+
+fn render_file_explorer(f: &mut Frame, app: &App, title: &str) {
+    let area = centered_rect(80, 80, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    app.file_explorer.widget().render_ref(inner_area, f.buffer_mut());
+}
+
+fn shorten_path(full_path: &str, max_width: usize) -> String {
+    if full_path.len() <= max_width {
+        return full_path.to_string();
+    }
+
+    // Split into protocol+bucket and folders
+    // Expected format: protocol://bucket/path/to/object
+    let parts: Vec<&str> = full_path.splitn(4, '/').collect();
+    if parts.len() < 4 {
+        return full_path.to_string();
+    }
+
+    let protocol = parts[0]; // e.g. "s3:"
+    let bucket = parts[2];   // e.g. "mybucket"
+    let protocol_bucket = format!("{}//{}", protocol, bucket);
+    let rest = parts[3];
+    
+    let mut path_parts: Vec<&str> = rest.split('/').collect();
+    
+    // Replace from left to right with ".." until it fits
+    for i in 0..path_parts.len().saturating_sub(1) {
+        path_parts[i] = "..";
+        let new_path = format!("{}/{}", protocol_bucket, path_parts.join("/"));
+        if new_path.len() <= max_width {
+            return new_path;
+        }
+    }
+
+    // If still too long, return what we have
+    format!("{}/{}", protocol_bucket, path_parts.join("/"))
 }

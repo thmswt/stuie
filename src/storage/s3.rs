@@ -166,6 +166,26 @@ impl StorageBackend for S3Storage {
         Ok(objects)
     }
 
+    async fn list_objects_recursive(&self, bucket: &str, prefix: Option<&Path>) -> Result<Vec<Object>> {
+        let store = self.create_store(bucket)?;
+        let mut objects = Vec::new();
+        let mut stream = store.list(prefix);
+        while let Some(meta) = stream.next().await {
+            let meta = meta?;
+            // Skip zero-byte folder marker objects
+            if meta.size == 0 {
+                continue;
+            }
+            objects.push(Object {
+                path: meta.location,
+                is_dir: false,
+                size: meta.size as u64,
+                last_modified: meta.last_modified,
+            });
+        }
+        Ok(objects)
+    }
+
     async fn get_object_preview(&self, bucket: &str, path: &Path, max_bytes: usize) -> Result<bytes::Bytes> {
         let store = self.create_store(bucket)?;
         let options = object_store::GetOptions {
@@ -216,11 +236,85 @@ impl StorageBackend for S3Storage {
         Ok(())
     }
 
-    async fn delete_objects(&self, bucket: &str, paths: &[Path]) -> Result<()> {
-        let store = self.create_store(bucket)?;
+    async fn create_folder(&self, bucket: &str, path: &Path) -> Result<()> {
+        // Object stores don't have real folders, we create a zero-byte object with a trailing slash
+        // Ensure path ends with / if it doesn't already
+        let mut path_str = path.to_string();
+        if !path_str.ends_with('/') {
+            path_str.push('/');
+        }
         
+        self.client.put_object()
+            .bucket(bucket)
+            .key(path_str)
+            .body(aws_sdk_s3::primitives::ByteStream::from_static(b""))
+            .send()
+            .await
+            .context("Failed to create folder using S3 SDK")?;
+
+        Ok(())
+    }
+
+    async fn delete_objects(&self, bucket: &str, paths: &[Path]) -> Result<()> {
         for path in paths {
-            store.delete(path).await.context(format!("Failed to delete {}", path))?;
+            let path_str = path.to_string();
+            
+            // We use the S3 SDK directly to handle recursive deletion to ensure we 
+            // correctly handle keys with trailing slashes, which Path might strip.
+            
+            // 1. Delete the object or prefix-as-folder-marker
+            // Try both with and without trailing slash for the target itself
+            let _ = self.client.delete_object()
+                .bucket(bucket)
+                .key(&path_str)
+                .send()
+                .await;
+                
+            let folder_marker = if path_str.ends_with('/') {
+                path_str.clone()
+            } else {
+                format!("{}/", path_str)
+            };
+            
+            let _ = self.client.delete_object()
+                .bucket(bucket)
+                .key(&folder_marker)
+                .send()
+                .await;
+
+            // 2. Recursively delete everything with the prefix
+            // Use list_objects_v2 to get all keys (including those with slashes)
+            let mut continuation_token = None;
+            loop {
+                let mut request = self.client.list_objects_v2()
+                    .bucket(bucket)
+                    .prefix(&folder_marker);
+                
+                if let Some(token) = continuation_token {
+                    request = request.continuation_token(token);
+                }
+                
+                let output = request.send().await.context("Failed to list objects for deletion")?;
+                
+                if let Some(contents) = output.contents {
+                    for object in contents {
+                        if let Some(key) = object.key {
+                            self.client.delete_object()
+                                .bucket(bucket)
+                                .key(key)
+                                .send()
+                                .await
+                                .context("Failed to delete object")?;
+                        }
+                    }
+                }
+                
+                if output.next_continuation_token.is_some() {
+                    continuation_token = output.next_continuation_token;
+                } else {
+                    break;
+                }
+            }
         }
         
         Ok(())
