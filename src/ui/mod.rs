@@ -261,7 +261,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // Bottom Bar
-    let keybindings = " Quit: q | Help: ? | Filter: / | Select: Space | Copy Path: y | New Folder: n | Download: d | Upload: u | Delete: x | Config: c | Switch: Tab ";
+    let keybindings = if app.show_config_modal {
+        if app.config_modal_state.as_ref().is_some_and(|s| s.edit_mode) {
+            " Next/Prev Field: Tab/S-Tab | Finish Editing: Enter/Esc  | Type to Input | Delete: Backspace | Type/HTTP: j/k "
+        } else {
+            " Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: c | Help: ? "
+        }
+    } else {
+        " Quit: q | Help: ? | Filter: / | Select: Space | Copy Path: y | New Folder: n | Download: d | Upload: u | Delete: x | Config: c | Switch: Tab "
+    };
     let status_text = if let Some(last_task) = app.active_tasks.last() {
         match last_task.task_type {
             TaskType::Upload | TaskType::Download => {
@@ -378,9 +386,43 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     if app.show_help {
         let area = centered_rect(80, 80, f.area());
         f.render_widget(Clear, area);
-        let help_block = Block::default().title(" Help / Keybindings ").borders(Borders::ALL);
-        let help_text = "
-Navigation:
+
+        let (help_title, help_text) = if app.show_config_modal {
+            if app.config_modal_state.as_ref().is_some_and(|s| s.edit_mode) {
+                (" Help (Editing Mode) ", "\
+\nField Navigation:
+  Tab       : Next field
+  S-Tab     : Previous field
+
+Editing:
+  Type      : Input text into the selected field
+  Backspace : Delete character
+  Enter     : Finish editing
+  Esc       : Finish editing
+
+Special Fields:
+  j/k or \u{2191}/\u{2193} : Cycle options (Type / Allow HTTP)
+")
+            } else {
+                (" Help (Normal Mode) ", "\
+\nProvider Navigation:
+  j/k or \u{2191}/\u{2193} : Navigate providers
+  e / Enter  : Edit provider fields
+  Enter      : Toggle enabled/disabled
+
+Provider Management:
+  a          : Add new provider
+  D          : Delete selected provider
+  s          : Save configuration
+
+General:
+  c          : Close without saving
+  ?          : Toggle Help
+")
+            }
+        } else {
+            (" Help / Keybindings ", "\
+\nNavigation:
   j/k       : Move selection down/up
   Tab       : Switch between Sidebar and Main List
   Enter     : Enter bucket or folder
@@ -397,7 +439,10 @@ Actions:
   c         : Toggle Configuration
   ?         : Toggle Help
   q / Esc   : Quit / Close Modal
-";
+")
+        };
+
+        let help_block = Block::default().title(help_title).borders(Borders::ALL);
         let help_para = Paragraph::new(help_text).block(help_block);
         f.render_widget(help_para, area);
     }
@@ -527,7 +572,6 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
                     Constraint::Length(3), // Access Key
                     Constraint::Length(3), // Secret Key
                     Constraint::Length(3), // Allow HTTP
-                    Constraint::Min(0),    // Hints
                 ].as_ref())
                 .split(chunks[1]);
 
@@ -589,20 +633,6 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
                 f.render_widget(field_para, fields_chunks[i]);
             }
 
-            let hints = "
-[Normal Mode]
-  j/k or \u{2191}/\u{2193}: Navigate providers |  e/Enter: Edit fields
-  a: Add provider          |  D: Delete provider
-  s: Save configuration    |  Enter: Toggle enabled/disabled
-  c: Close without saving
-
-[Editing Mode]
-  Tab / S-Tab: Next/Prev field |  Enter/Esc: Finish editing
-  Type to input                |  Backspace: Delete
-  (Type/HTTP: cycle with j/k or \u{2191}/\u{2193})
-";
-            let hints_para = Paragraph::new(hints).block(Block::default().title(" Help ").borders(Borders::ALL));
-            f.render_widget(hints_para, fields_chunks[8]);
         }
     }
 }
