@@ -91,6 +91,7 @@ pub struct App {
     pub main_list_state: TableState,
     pub all_buckets: Vec<Bucket>,
     pub expanded_providers: HashSet<usize>,
+    pub activated_providers: HashSet<usize>,
     pub objects: Vec<Object>,
     pub selected_paths: HashSet<object_store::path::Path>,
     pub current_bucket: Option<String>,
@@ -149,6 +150,7 @@ impl App {
             main_list_state: TableState::default(),
             all_buckets: Vec::new(),
             expanded_providers: HashSet::new(),
+            activated_providers: HashSet::new(),
             objects: Vec::new(),
             selected_paths: HashSet::new(),
             current_bucket: None,
@@ -1046,12 +1048,17 @@ impl App {
                                                             }
                                                         }
                                                     }
-                                                    self.save_message = Some(format!("Connected to '{}'", provider_name));
-                                                    self.save_message_time = Some(std::time::Instant::now());
+                                                    if !self.activated_providers.contains(p_idx) {
+                                                        self.save_message = Some(format!("Connected to '{}'", provider_name));
+                                                        self.save_message_time = Some(std::time::Instant::now());
+                                                    }
                                                 } else {
-                                                    self.save_message = Some(format!("Connected to '{}', but no buckets found.", provider_name));
-                                                    self.save_message_time = Some(std::time::Instant::now());
+                                                    if !self.activated_providers.contains(p_idx) {
+                                                        self.save_message = Some(format!("Connected to '{}', but no buckets found.", provider_name));
+                                                        self.save_message_time = Some(std::time::Instant::now());
+                                                    }
                                                 }
+                                                self.activated_providers.insert(*p_idx);
                                             }
                                             Err(e) => self.set_error(format!("Connection to '{}' failed: {}", provider_name, e)),
                                         }
