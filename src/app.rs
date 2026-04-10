@@ -859,7 +859,14 @@ impl App {
                         let _ = self.file_explorer.handle(event);
                     }
                 }
-
+                crossterm::event::KeyCode::Char('F') => {
+                    let current = self.file_explorer.current().path.to_owned();
+                    if current.is_dir() {
+                        self.prompt_input = current.to_string_lossy().to_string();
+                        self.start_folder_upload().await;
+                        self.input_mode = InputMode::Normal;
+                    }
+                }
                 _ => {
                     let _ = self.file_explorer.handle(event);
                 }
@@ -1320,7 +1327,7 @@ impl App {
                 let id = format!("download_{}_{}", bucket, path);
                 let task = AppTask {
                     id: id.clone(),
-                    description: format!("Downloading {}/", folder_name),
+                    description: format!("Downloading {}/ to {}", folder_name, local_base_path.display()),
                     task_type: TaskType::Download,
                     bytes_transferred: 0,
                     total_size,
@@ -1378,7 +1385,7 @@ impl App {
 
                 let task = AppTask {
                     id: id.clone(),
-                    description: format!("Downloading {}", filename),
+                    description: format!("Downloading {} to {}", filename, local_base_path.join(&filename).display()),
                     task_type: TaskType::Download,
                     bytes_transferred: 0,
                     total_size,
@@ -1443,7 +1450,7 @@ impl App {
 
         let task = AppTask {
             id: id.clone(),
-            description: format!("Uploading {}", filename),
+            description: format!("Uploading {} to {}", filename, self.get_full_remote_path()),
             task_type: TaskType::Upload,
             bytes_transferred: 0,
             total_size,
@@ -1463,9 +1470,125 @@ impl App {
             });
 
             let result = provider.upload(&bucket, &remote_path, &local_path, progress_cb).await;
-            let _ = event_tx.send(AppEvent::TaskFinished { 
-                id: task_id, 
-                result: result.map_err(|e| e.to_string()) 
+            let _ = event_tx.send(AppEvent::TaskFinished {
+                id: task_id,
+                result: result.map_err(|e| e.to_string())
+            });
+        });
+    }
+
+    async fn start_folder_upload(&mut self) {
+        let folder_path = std::path::PathBuf::from(&self.prompt_input);
+        if !folder_path.is_dir() {
+            self.set_error("Selected path is not a directory".to_string());
+            return;
+        }
+
+        let bucket = match &self.current_bucket {
+            Some(b) => b.clone(),
+            None => return,
+        };
+
+        let sidebar_index = match self.sidebar_state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+        let items = self.sidebar_items();
+        let provider_idx = match items.get(sidebar_index) {
+            Some(SidebarItem::Bucket { provider_index, .. }) => *provider_index,
+            _ => return,
+        };
+
+        let folder_name = folder_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder")
+            .to_string();
+
+        // Collect all files recursively
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut dirs_to_visit = vec![folder_path.clone()];
+        while let Some(dir) = dirs_to_visit.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(err) => {
+                    self.set_error(format!("Failed to read directory {}: {}", dir.display(), err));
+                    return;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs_to_visit.push(path);
+                } else if path.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+
+        if files.is_empty() {
+            self.set_error("Selected folder is empty".to_string());
+            return;
+        }
+
+        let total_size: u64 = files.iter()
+            .filter_map(|f| std::fs::metadata(f).ok())
+            .map(|m| m.len())
+            .sum();
+
+        let base_remote = if let Some(p) = &self.current_path {
+            p.child(&*folder_name)
+        } else {
+            ObjectPath::from(&*folder_name)
+        };
+
+        let id = format!("folder_upload_{}_{}", bucket, base_remote);
+        let task = AppTask {
+            id: id.clone(),
+            description: format!("Uploading folder {} ({} files) to {}", folder_name, files.len(), self.get_full_remote_path()),
+            task_type: TaskType::Upload,
+            bytes_transferred: 0,
+            total_size,
+            start_time: std::time::Instant::now(),
+        };
+        self.active_tasks.push(task);
+
+        let provider = self.storage_providers[provider_idx].clone_box();
+        let event_tx = self.event_tx.clone();
+        let task_id = id.clone();
+
+        tokio::spawn(async move {
+            let mut overall_result: Result<(), String> = Ok(());
+
+            for file_path in &files {
+                let relative = file_path.strip_prefix(&folder_path).unwrap_or(file_path);
+                let mut remote_path = base_remote.clone();
+                for component in relative.parent().into_iter().flat_map(|p| p.components()) {
+                    if let std::path::Component::Normal(seg) = component {
+                        if let Some(s) = seg.to_str() {
+                            remote_path = remote_path.child(s);
+                        }
+                    }
+                }
+                let file_name = file_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file");
+                remote_path = remote_path.child(file_name);
+
+                let event_tx_inner = event_tx.clone();
+                let task_id_inner = task_id.clone();
+                let progress_cb: ProgressCallback = Arc::new(move |bytes| {
+                    let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                });
+
+                if let Err(e) = provider.upload(&bucket, &remote_path, file_path, progress_cb).await {
+                    overall_result = Err(format!("{}: {}", file_path.display(), e));
+                    break;
+                }
+            }
+
+            let _ = event_tx.send(AppEvent::TaskFinished {
+                id: task_id,
+                result: overall_result,
             });
         });
     }

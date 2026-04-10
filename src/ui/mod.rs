@@ -342,10 +342,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     match app.input_mode {
         InputMode::DownloadPrompt => {
-            render_file_explorer(f, app, " Download to (Enter: Select Dir, l: Enter Dir, h: Parent, Esc: Cancel) ");
+            render_file_explorer(f, app, " Download to ");
         }
         InputMode::UploadPrompt => {
-            render_file_explorer(f, app, " Select file to upload (Enter: Select, l: Enter Dir, h: Parent, Esc: Cancel) ");
+            render_file_explorer(f, app, " Select file to upload (Enter: File | F: Upload Folder) ");
         }
         InputMode::DeleteConfirmation => {
             render_delete_confirmation(f, app);
@@ -434,7 +434,7 @@ Actions:
   y         : Copy current path to clipboard
   n         : Create new folder
   d         : Download selected objects
-  u         : Upload local file to current folder
+  u         : Upload file or folder to current path
   x/Delete  : Delete selected objects
   c         : Toggle Configuration
   ?         : Toggle Help
