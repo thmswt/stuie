@@ -403,7 +403,7 @@ impl App {
     pub async fn on_event(&mut self, event: &crossterm::event::Event) {
         match event {
             crossterm::event::Event::Key(key) => {
-                self.handle_key(key.code, event).await;
+                self.handle_key(key.code, key.modifiers, event).await;
             }
             crossterm::event::Event::Mouse(mouse) => {
                 if mouse.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
@@ -565,7 +565,7 @@ impl App {
         format!("{}://{}/{}", protocol, bucket, path)
     }
 
-    async fn handle_key(&mut self, key_code: crossterm::event::KeyCode, event: &crossterm::event::Event) {
+    async fn handle_key(&mut self, key_code: crossterm::event::KeyCode, key_modifiers: crossterm::event::KeyModifiers, event: &crossterm::event::Event) {
         if self.pending_delete_index.is_some() {
             match key_code {
                 crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
@@ -845,16 +845,32 @@ impl App {
                 }
                 crossterm::event::KeyCode::Backspace => {
                     if let Some(state) = &mut self.config_modal_state {
-                        let provider = &mut state.providers[state.selected_provider_index];
-                        match state.selected_field_index {
-                            0 => { provider.name.pop(); }
-                            2 => { if let Some(r) = &mut provider.region { r.pop(); } }
-                            3 => { if let Some(b) = &mut provider.bucket_name { b.pop(); } }
-                            4 => { if let Some(e) = &mut provider.endpoint { e.pop(); } }
-                            5 => { if let Some(a) = &mut provider.access_key_id { a.pop(); } }
-                            6 => { if let Some(s) = &mut provider.secret_access_key { s.pop(); } }
-                            _ => {}
+                        if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                            if let Some(field) = get_editing_field_mut(state) { field.clear(); }
+                        } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                            if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
+                        } else {
+                            let provider = &mut state.providers[state.selected_provider_index];
+                            match state.selected_field_index {
+                                0 => { provider.name.pop(); }
+                                2 => { if let Some(r) = &mut provider.region { r.pop(); } }
+                                3 => { if let Some(b) = &mut provider.bucket_name { b.pop(); } }
+                                4 => { if let Some(e) = &mut provider.endpoint { e.pop(); } }
+                                5 => { if let Some(a) = &mut provider.access_key_id { a.pop(); } }
+                                6 => { if let Some(s) = &mut provider.secret_access_key { s.pop(); } }
+                                _ => {}
+                            }
                         }
+                    }
+                }
+                crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    if let Some(state) = &mut self.config_modal_state {
+                        if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
+                    }
+                }
+                crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    if let Some(state) = &mut self.config_modal_state {
+                        if let Some(field) = get_editing_field_mut(state) { field.clear(); }
                     }
                 }
                 crossterm::event::KeyCode::Char(c) => {
@@ -886,7 +902,23 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
                 crossterm::event::KeyCode::Backspace => {
-                    self.search_query.pop();
+                    if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                        self.search_query.clear();
+                    } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                        delete_previous_word(&mut self.search_query);
+                    } else {
+                        self.search_query.pop();
+                    }
+                    self.main_list_state.select(Some(0));
+                    self.update_preview().await;
+                }
+                crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    delete_previous_word(&mut self.search_query);
+                    self.main_list_state.select(Some(0));
+                    self.update_preview().await;
+                }
+                crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    self.search_query.clear();
                     self.main_list_state.select(Some(0));
                     self.update_preview().await;
                 }
@@ -907,7 +939,21 @@ impl App {
                             self.file_explorer_search_active = false;
                         }
                         crossterm::event::KeyCode::Backspace => {
-                            self.file_explorer_filter.pop();
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                                self.file_explorer_filter.clear();
+                            } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                delete_previous_word(&mut self.file_explorer_filter);
+                            } else {
+                                self.file_explorer_filter.pop();
+                            }
+                            self.apply_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            delete_previous_word(&mut self.file_explorer_filter);
+                            self.apply_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            self.file_explorer_filter.clear();
                             self.apply_file_explorer_filter();
                         }
                         crossterm::event::KeyCode::Char(c) => {
@@ -957,7 +1003,21 @@ impl App {
                             self.file_explorer_search_active = false;
                         }
                         crossterm::event::KeyCode::Backspace => {
-                            self.file_explorer_filter.pop();
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                                self.file_explorer_filter.clear();
+                            } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                delete_previous_word(&mut self.file_explorer_filter);
+                            } else {
+                                self.file_explorer_filter.pop();
+                            }
+                            self.apply_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            delete_previous_word(&mut self.file_explorer_filter);
+                            self.apply_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            self.file_explorer_filter.clear();
                             self.apply_file_explorer_filter();
                         }
                         crossterm::event::KeyCode::Char(c) => {
@@ -1020,7 +1080,19 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
                 crossterm::event::KeyCode::Backspace => {
-                    self.prompt_input.pop();
+                    if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                        self.prompt_input.clear();
+                    } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                        delete_previous_word(&mut self.prompt_input);
+                    } else {
+                        self.prompt_input.pop();
+                    }
+                }
+                crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    delete_previous_word(&mut self.prompt_input);
+                }
+                crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    self.prompt_input.clear();
                 }
                 crossterm::event::KeyCode::Char(c) => {
                     self.prompt_input.push(c);
@@ -1974,6 +2046,30 @@ impl App {
         if !uploads.is_empty() {
             self.execute_upload_batch(uploads, &state.bucket, state.provider_idx).await;
         }
+    }
+}
+
+fn delete_previous_word(s: &mut String) {
+    // Skip trailing whitespace
+    while s.ends_with(|c: char| c.is_whitespace()) {
+        s.pop();
+    }
+    // Delete until next whitespace or path separator
+    while !s.is_empty() && !s.ends_with(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
+        s.pop();
+    }
+}
+
+fn get_editing_field_mut(state: &mut ConfigModalState) -> Option<&mut String> {
+    let provider = state.providers.get_mut(state.selected_provider_index)?;
+    match state.selected_field_index {
+        0 => Some(&mut provider.name),
+        2 => Some(provider.region.get_or_insert_with(String::new)),
+        3 => Some(provider.bucket_name.get_or_insert_with(String::new)),
+        4 => Some(provider.endpoint.get_or_insert_with(String::new)),
+        5 => Some(provider.access_key_id.get_or_insert_with(String::new)),
+        6 => Some(provider.secret_access_key.get_or_insert_with(String::new)),
+        _ => None,
     }
 }
 
