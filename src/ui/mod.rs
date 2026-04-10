@@ -30,22 +30,20 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .split(chunks[0]);
 
     let full_path = app.get_full_remote_path();
-    // Max width for path: chunk width - borders(2) - leading space(1) - trailing space(1) - icon(2)
-    let max_path_width = top_chunks[0].width.saturating_sub(6);
-    let shortened_path = shorten_path(&full_path, max_path_width as usize);
-    
+    let path_inner_width = top_chunks[0].width.saturating_sub(2) as usize; // minus borders
+    let max_path_width = path_inner_width.saturating_sub(3); // space for " 📋"
+    let shortened_path = shorten_path(&full_path, max_path_width);
+
     let path_block = Block::default().borders(Borders::ALL).title(" Path ");
-    let path_line = Line::from(vec![
-        Span::raw(format!(" {}", shortened_path)),
-        Span::raw(" "),
-        Span::styled("📋", Style::default().fg(Color::Cyan)),
-    ]);
-    let path_para = Paragraph::new(path_line).block(path_block);
+    let path_para = Paragraph::new(format!(" {}", shortened_path)).block(path_block);
     f.render_widget(path_para, top_chunks[0]);
 
-    // Save copy button area
-    let icon_x = top_chunks[0].x + 3 + shortened_path.len() as u16;
-    app.copy_button_area = Some(Rect::new(icon_x, top_chunks[0].y + 1, 2, 1));
+    // Render clipboard icon at right edge of path bar
+    let path_icon_x = top_chunks[0].x + top_chunks[0].width.saturating_sub(3);
+    let path_icon_y = top_chunks[0].y + 1;
+    let path_icon_area = Rect::new(path_icon_x, path_icon_y, 2, 1);
+    f.render_widget(Span::styled("📋", Style::default().fg(Color::Cyan)), path_icon_area);
+    app.copy_button_area = Some(path_icon_area);
 
     let is_search = matches!(app.input_mode, InputMode::Search);
     let search_title = if is_search { " Filter (Esc to exit) " } else { " Filter ('/' to edit) " };
@@ -315,21 +313,27 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         " Ready".to_string()
     };
 
-    let bottom_line = Line::from(vec![
-        Span::raw(status_text.clone()),
-        Span::raw(" "),
-        Span::styled("📋", Style::default().fg(Color::Cyan)),
-    ]);
-    let bottom_bar = Paragraph::new(bottom_line)
+    let task_inner_width = chunks[2].width.saturating_sub(2) as usize; // minus borders
+    let max_status_width = task_inner_width.saturating_sub(3); // space for " 📋"
+    let truncated_status = if status_text.len() > max_status_width {
+        format!("{}…", &status_text[..max_status_width.saturating_sub(1)])
+    } else {
+        status_text
+    };
+
+    let bottom_bar = Paragraph::new(truncated_status)
         .block(Block::default()
             .title(" Task ")
             .borders(Borders::ALL)
         );
     f.render_widget(bottom_bar, chunks[2]);
 
-    // Save task copy area
-    let task_icon_x = chunks[2].x + 1 + status_text.len() as u16 + 1;
-    app.task_copy_area = Some(Rect::new(task_icon_x, chunks[2].y + 1, 2, 1));
+    // Render clipboard icon at right edge of task bar
+    let task_icon_x = chunks[2].x + chunks[2].width.saturating_sub(3);
+    let task_icon_y = chunks[2].y + 1;
+    let task_icon_area = Rect::new(task_icon_x, task_icon_y, 2, 1);
+    f.render_widget(Span::styled("📋", Style::default().fg(Color::Cyan)), task_icon_area);
+    app.task_copy_area = Some(task_icon_area);
 
     let keybindings_para = Paragraph::new(keybindings)
         .style(Style::default().fg(Color::Gray));
