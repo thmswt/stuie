@@ -265,6 +265,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         } else {
             " Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: c | Help: ? "
         }
+    } else if matches!(app.input_mode, InputMode::OverwriteConfirmation) {
+        " Overwrite: o | Skip: s | Rename: r | Overwrite All: O | Skip All: S | Cancel: Esc "
     } else {
         " Quit: q | Help: ? | Filter: / | Select: Space | Copy Path: y | New Folder: n | Download: d | Upload: u | Delete: x | Config: c | Switch: Tab "
     };
@@ -356,6 +358,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         }
         InputMode::CreateFolderPrompt => {
             render_prompt(f, " New Folder Name ", &app.prompt_input);
+        }
+        InputMode::OverwriteConfirmation => {
+            render_overwrite_confirmation(f, app);
         }
         _ => {}
     }
@@ -525,6 +530,84 @@ fn render_delete_confirmation(f: &mut Frame, app: &App) {
     let confirm_text = format!("Delete {} items? (y)es / (n)o", paths_to_delete.len());
     let confirm_para = Paragraph::new(confirm_text).style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
     f.render_widget(confirm_para, chunks[1]);
+}
+
+fn render_overwrite_confirmation(f: &mut Frame, app: &App) {
+    let state = match &app.conflict_state {
+        Some(s) => s,
+        None => return,
+    };
+
+    let conflict = match state.conflicts.get(state.current_index) {
+        Some(c) => c,
+        None => return,
+    };
+
+    let area = centered_rect(60, 40, f.area());
+    f.render_widget(Clear, area);
+
+    let title = format!(
+        " File Conflict ({}/{}) ",
+        state.current_index + 1,
+        state.conflicts.len()
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // File info
+            Constraint::Min(0),    // Options
+            Constraint::Length(1), // Hint
+        ])
+        .split(inner);
+
+    let info_text = format!(
+        "\"{}\" already exists at:\n{}",
+        conflict.source_name,
+        conflict.target_display,
+    );
+    let info_para = Paragraph::new(info_text)
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: true });
+    f.render_widget(info_para, chunks[0]);
+
+    let options = [
+        ("o", "Overwrite"),
+        ("s", "Skip"),
+        ("r", "Rename (auto-number)"),
+        ("O", "Overwrite All"),
+        ("S", "Skip All"),
+    ];
+
+    let option_items: Vec<ListItem> = options.iter().enumerate().map(|(i, (key, label))| {
+        let is_selected = i == state.selected_option;
+        let prefix = if is_selected { "> " } else { "  " };
+        let style = if is_selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        ListItem::new(Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(format!("[{}] ", key), Style::default().fg(Color::Cyan)),
+            Span::styled(*label, style),
+        ]))
+    }).collect();
+
+    let options_list = List::new(option_items)
+        .block(Block::default().borders(Borders::TOP).title(" Choose action "));
+    f.render_widget(options_list, chunks[1]);
+
+    let hint = Paragraph::new(" Enter: confirm | Esc: cancel")
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(hint, chunks[2]);
 }
 
 fn render_config_modal(f: &mut Frame, app: &mut App) {
@@ -718,10 +801,33 @@ fn render_file_explorer(f: &mut Frame, app: &App, title: &str) {
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
-    
+
     let inner_area = block.inner(area);
     f.render_widget(block, area);
-    app.file_explorer.widget().render_ref(inner_area, f.buffer_mut());
+
+    if app.file_explorer_search_active || !app.file_explorer_filter.is_empty() {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(inner_area);
+
+        let search_style = if app.file_explorer_search_active {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let search_text = if app.file_explorer_search_active {
+            format!(" /{}|", app.file_explorer_filter)
+        } else {
+            format!(" /{}", app.file_explorer_filter)
+        };
+        let search_para = Paragraph::new(search_text).style(search_style);
+        f.render_widget(search_para, chunks[0]);
+
+        app.file_explorer.widget().render_ref(chunks[1], f.buffer_mut());
+    } else {
+        app.file_explorer.widget().render_ref(inner_area, f.buffer_mut());
+    }
 }
 
 fn shorten_path(full_path: &str, max_width: usize) -> String {

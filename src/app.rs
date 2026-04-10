@@ -18,6 +18,7 @@ pub enum InputMode {
     UploadPrompt,
     DeleteConfirmation,
     CreateFolderPrompt,
+    OverwriteConfirmation,
 }
 
 #[derive(PartialEq, Eq)]
@@ -65,6 +66,47 @@ pub struct FinishedTask {
     pub end_time: std::time::Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictChoice {
+    Overwrite,
+    Skip,
+    Rename,
+    OverwriteAll,
+    SkipAll,
+}
+
+#[derive(Debug, Clone)]
+pub enum ConflictOperation {
+    Download {
+        remote_path: ObjectPath,
+        local_path: std::path::PathBuf,
+        size: u64,
+    },
+    Upload {
+        local_path: std::path::PathBuf,
+        remote_path: ObjectPath,
+        size: u64,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingConflict {
+    pub source_name: String,
+    pub target_display: String,
+    pub operation: ConflictOperation,
+}
+
+pub struct ConflictResolutionState {
+    pub conflicts: Vec<PendingConflict>,
+    pub current_index: usize,
+    pub resolved: Vec<(PendingConflict, ConflictChoice)>,
+    pub no_conflict_items: Vec<ConflictOperation>,
+    pub selected_option: usize,
+    pub bucket: String,
+    pub provider_idx: usize,
+    pub existing_remote_keys: Option<HashSet<String>>,
+}
+
 pub enum AppEvent {
     TaskProgress { id: String, bytes: u64 },
     TaskFinished { id: String, result: Result<(), String> },
@@ -107,12 +149,17 @@ pub struct App {
     pub event_tx: mpsc::UnboundedSender<AppEvent>,
     pub event_rx: mpsc::UnboundedReceiver<AppEvent>,
 
-    // File Explorer for Upload
+    // File Explorer for Upload/Download
     pub file_explorer: FileExplorer,
+    pub file_explorer_filter: String,
+    pub file_explorer_search_active: bool,
 
     pub copy_button_area: Option<ratatui::layout::Rect>,
     pub error_copy_area: Option<ratatui::layout::Rect>,
     pub task_copy_area: Option<ratatui::layout::Rect>,
+
+    // Conflict Resolution
+    pub conflict_state: Option<ConflictResolutionState>,
 }
 
 impl App {
@@ -164,9 +211,12 @@ impl App {
             event_tx,
             event_rx,
             file_explorer,
+            file_explorer_filter: String::new(),
+            file_explorer_search_active: false,
             copy_button_area: None,
             error_copy_area: None,
             task_copy_area: None,
+            conflict_state: None,
         };
         
         app.refresh_storage_providers().await;
@@ -243,6 +293,31 @@ impl App {
             self.sidebar_state.select(Some(0));
         }
         self.update_preview().await;
+    }
+
+    fn apply_file_explorer_filter(&mut self) {
+        let cwd = self.file_explorer.cwd().to_owned();
+        if self.file_explorer_filter.is_empty() {
+            let _ = self.file_explorer.remove_filter_map();
+        } else {
+            let query = self.file_explorer_filter.to_lowercase();
+            let _ = self.file_explorer.set_filter_map(move |file| {
+                if file.name == "../" || file.name.to_lowercase().contains(&query) {
+                    Some(file)
+                } else {
+                    None
+                }
+            });
+        }
+        let _ = self.file_explorer.set_cwd(cwd);
+    }
+
+    fn reset_file_explorer_filter(&mut self) {
+        self.file_explorer_filter.clear();
+        self.file_explorer_search_active = false;
+        let cwd = self.file_explorer.cwd().to_owned();
+        let _ = self.file_explorer.remove_filter_map();
+        let _ = self.file_explorer.set_cwd(cwd);
     }
 
     pub fn set_error(&mut self, msg: String) {
@@ -822,55 +897,106 @@ impl App {
                 }
                 _ => {}
             }
-            InputMode::DownloadPrompt => match key_code {
-                crossterm::event::KeyCode::Esc => {
-                    self.input_mode = InputMode::Normal;
-                }
-                crossterm::event::KeyCode::Enter => {
-                    let current = self.file_explorer.current().path.to_owned();
-                    if current.is_dir() {
-                        self.prompt_input = current.to_string_lossy().to_string();
-                        self.start_download().await;
-                        self.input_mode = InputMode::Normal;
-                    } else {
-                        // If a file is selected, use its parent directory
-                        if let Some(parent) = current.parent() {
-                            self.prompt_input = parent.to_string_lossy().to_string();
-                            self.start_download().await;
+            InputMode::DownloadPrompt => {
+                if self.file_explorer_search_active {
+                    match key_code {
+                        crossterm::event::KeyCode::Esc => {
+                            self.reset_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            self.file_explorer_search_active = false;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            self.file_explorer_filter.pop();
+                            self.apply_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            self.file_explorer_filter.push(c);
+                            self.apply_file_explorer_filter();
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match key_code {
+                        crossterm::event::KeyCode::Esc => {
+                            self.reset_file_explorer_filter();
                             self.input_mode = InputMode::Normal;
-                        } else {
+                        }
+                        crossterm::event::KeyCode::Char('/') => {
+                            self.file_explorer_search_active = true;
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            let current = self.file_explorer.current().path.to_owned();
+                            if current.is_dir() {
+                                self.prompt_input = current.to_string_lossy().to_string();
+                                self.reset_file_explorer_filter();
+                                self.start_download().await;
+                            } else {
+                                if let Some(parent) = current.parent() {
+                                    self.prompt_input = parent.to_string_lossy().to_string();
+                                    self.reset_file_explorer_filter();
+                                    self.start_download().await;
+                                } else {
+                                    let _ = self.file_explorer.handle(event);
+                                }
+                            }
+                        }
+                        _ => {
                             let _ = self.file_explorer.handle(event);
                         }
                     }
                 }
-                _ => {
-                    let _ = self.file_explorer.handle(event);
-                }
             }
-            InputMode::UploadPrompt => match key_code {
-                crossterm::event::KeyCode::Esc => {
-                    self.input_mode = InputMode::Normal;
-                }
-                crossterm::event::KeyCode::Enter => {
-                    let current = self.file_explorer.current().path.to_owned();
-                    if current.is_file() {
-                        self.prompt_input = current.to_string_lossy().to_string();
-                        self.start_upload().await;
-                        self.input_mode = InputMode::Normal;
-                    } else {
-                        let _ = self.file_explorer.handle(event);
+            InputMode::UploadPrompt => {
+                if self.file_explorer_search_active {
+                    match key_code {
+                        crossterm::event::KeyCode::Esc => {
+                            self.reset_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            self.file_explorer_search_active = false;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            self.file_explorer_filter.pop();
+                            self.apply_file_explorer_filter();
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            self.file_explorer_filter.push(c);
+                            self.apply_file_explorer_filter();
+                        }
+                        _ => {}
                     }
-                }
-                crossterm::event::KeyCode::Char('F') => {
-                    let current = self.file_explorer.current().path.to_owned();
-                    if current.is_dir() {
-                        self.prompt_input = current.to_string_lossy().to_string();
-                        self.start_folder_upload().await;
-                        self.input_mode = InputMode::Normal;
+                } else {
+                    match key_code {
+                        crossterm::event::KeyCode::Esc => {
+                            self.reset_file_explorer_filter();
+                            self.input_mode = InputMode::Normal;
+                        }
+                        crossterm::event::KeyCode::Char('/') => {
+                            self.file_explorer_search_active = true;
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            let current = self.file_explorer.current().path.to_owned();
+                            if current.is_file() {
+                                self.prompt_input = current.to_string_lossy().to_string();
+                                self.reset_file_explorer_filter();
+                                self.start_upload().await;
+                            } else {
+                                let _ = self.file_explorer.handle(event);
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('F') => {
+                            let current = self.file_explorer.current().path.to_owned();
+                            if current.is_dir() {
+                                self.prompt_input = current.to_string_lossy().to_string();
+                                self.reset_file_explorer_filter();
+                                self.start_folder_upload().await;
+                            }
+                        }
+                        _ => {
+                            let _ = self.file_explorer.handle(event);
+                        }
                     }
-                }
-                _ => {
-                    let _ = self.file_explorer.handle(event);
                 }
             }
             InputMode::DeleteConfirmation => match key_code {
@@ -898,6 +1024,46 @@ impl App {
                 }
                 crossterm::event::KeyCode::Char(c) => {
                     self.prompt_input.push(c);
+                }
+                _ => {}
+            }
+            InputMode::OverwriteConfirmation => match key_code {
+                crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = (state.selected_option + 1) % 5;
+                    }
+                }
+                crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = state.selected_option.checked_sub(1).unwrap_or(4);
+                    }
+                }
+                crossterm::event::KeyCode::Enter => {
+                    self.resolve_current_conflict().await;
+                }
+                crossterm::event::KeyCode::Esc => {
+                    self.conflict_state = None;
+                    self.input_mode = InputMode::Normal;
+                }
+                crossterm::event::KeyCode::Char('o') => {
+                    if let Some(state) = &mut self.conflict_state { state.selected_option = 0; }
+                    self.resolve_current_conflict().await;
+                }
+                crossterm::event::KeyCode::Char('s') => {
+                    if let Some(state) = &mut self.conflict_state { state.selected_option = 1; }
+                    self.resolve_current_conflict().await;
+                }
+                crossterm::event::KeyCode::Char('r') => {
+                    if let Some(state) = &mut self.conflict_state { state.selected_option = 2; }
+                    self.resolve_current_conflict().await;
+                }
+                crossterm::event::KeyCode::Char('O') => {
+                    if let Some(state) = &mut self.conflict_state { state.selected_option = 3; }
+                    self.resolve_current_conflict().await;
+                }
+                crossterm::event::KeyCode::Char('S') => {
+                    if let Some(state) = &mut self.conflict_state { state.selected_option = 4; }
+                    self.resolve_current_conflict().await;
                 }
                 _ => {}
             }
@@ -1302,125 +1468,85 @@ impl App {
             }
         }
 
+        // Flatten all items into download operations
         let provider = &self.storage_providers[provider_idx];
+        let mut all_items: Vec<ConflictOperation> = Vec::new();
+
         for (path, is_dir) in &selected_objects {
             if *is_dir {
-                // Folder download: single task for the entire folder
                 let folder_name = path.filename().unwrap_or(path.as_ref()).to_string();
-                let files: Vec<(ObjectPath, std::path::PathBuf, u64)> = match provider.list_objects_recursive(&bucket, Some(path)).await {
+                match provider.list_objects_recursive(&bucket, Some(path)).await {
                     Ok(objects) => {
-                        objects.into_iter().filter_map(|obj| {
+                        for obj in objects {
                             let rel = obj.path.as_ref().strip_prefix(path.as_ref())
                                 .unwrap_or(obj.path.as_ref())
                                 .trim_start_matches('/');
-                            if rel.is_empty() {
-                                return None;
-                            }
+                            if rel.is_empty() { continue; }
                             let local_path = local_base_path.join(&folder_name).join(rel);
-                            Some((obj.path, local_path, obj.size))
-                        }).collect()
+                            all_items.push(ConflictOperation::Download {
+                                remote_path: obj.path,
+                                local_path,
+                                size: obj.size,
+                            });
+                        }
                     }
                     Err(e) => {
                         self.set_error(format!("Failed to list folder {}: {}", folder_name, e));
                         return;
                     }
-                };
-
-                if files.is_empty() {
-                    continue;
-                }
-
-                let total_size: u64 = files.iter().map(|(_, _, size)| size).sum();
-                let id = format!("download_{}_{}", bucket, path);
-                let task = AppTask {
-                    id: id.clone(),
-                    description: format!("Downloading {}/ to {}", folder_name, local_base_path.display()),
-                    task_type: TaskType::Download,
-                    bytes_transferred: 0,
-                    total_size,
-                    start_time: std::time::Instant::now(),
-                };
-                self.active_tasks.push(task);
-
-                let file_count = files.len();
-                let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(file_count));
-                let first_error: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
-
-                for (obj_path, local_path, _) in files {
-                    let provider = self.storage_providers[provider_idx].clone_box();
-                    let event_tx = self.event_tx.clone();
-                    let task_id = id.clone();
-                    let bucket_inner = bucket.clone();
-                    let remaining = remaining.clone();
-                    let first_error = first_error.clone();
-
-                    tokio::spawn(async move {
-                        let event_tx_inner = event_tx.clone();
-                        let task_id_inner = task_id.clone();
-                        let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                            let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
-                        });
-
-                        let result = provider.download(&bucket_inner, &obj_path, &local_path, progress_cb).await;
-                        if let Err(e) = &result {
-                            let mut err = first_error.lock().await;
-                            if err.is_none() {
-                                *err = Some(e.to_string());
-                            }
-                        }
-
-                        if remaining.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
-                            let err = first_error.lock().await;
-                            let result = match &*err {
-                                Some(e) => Err(e.clone()),
-                                None => Ok(()),
-                            };
-                            let _ = event_tx.send(AppEvent::TaskFinished {
-                                id: task_id,
-                                result,
-                            });
-                        }
-                    });
                 }
             } else {
-                // Single file download
                 let filename = path.filename().unwrap_or(path.as_ref()).to_string();
                 let local_path = local_base_path.join(&filename);
-                let bucket_inner = bucket.clone();
-                let id = format!("download_{}_{}", bucket_inner, path);
-                let total_size = self.objects.iter().find(|o| o.path == *path).map(|o| o.size).unwrap_or(0);
-
-                let task = AppTask {
-                    id: id.clone(),
-                    description: format!("Downloading {} to {}", filename, local_base_path.join(&filename).display()),
-                    task_type: TaskType::Download,
-                    bytes_transferred: 0,
-                    total_size,
-                    start_time: std::time::Instant::now(),
-                };
-                self.active_tasks.push(task);
-
-                let provider = self.storage_providers[provider_idx].clone_box();
-                let event_tx = self.event_tx.clone();
-                let task_id = id.clone();
-                let path = path.clone();
-
-                tokio::spawn(async move {
-                    let event_tx_inner = event_tx.clone();
-                    let task_id_inner = task_id.clone();
-                    let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                        let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
-                    });
-
-                    let result = provider.download(&bucket_inner, &path, &local_path, progress_cb).await;
-                    let _ = event_tx.send(AppEvent::TaskFinished {
-                        id: task_id,
-                        result: result.map_err(|e| e.to_string())
-                    });
+                let size = self.objects.iter().find(|o| o.path == *path).map(|o| o.size).unwrap_or(0);
+                all_items.push(ConflictOperation::Download {
+                    remote_path: path.clone(),
+                    local_path,
+                    size,
                 });
             }
         }
+
         self.selected_paths.clear();
+
+        if all_items.is_empty() {
+            self.input_mode = InputMode::Normal;
+            return;
+        }
+
+        // Partition into conflicts (local file exists) and no-conflict
+        let mut conflicts = Vec::new();
+        let mut no_conflict = Vec::new();
+        for item in all_items {
+            if let ConflictOperation::Download { ref local_path, ref remote_path, .. } = item {
+                if local_path.exists() {
+                    conflicts.push(PendingConflict {
+                        source_name: remote_path.filename().unwrap_or(remote_path.as_ref()).to_string(),
+                        target_display: local_path.to_string_lossy().to_string(),
+                        operation: item,
+                    });
+                } else {
+                    no_conflict.push(item);
+                }
+            }
+        }
+
+        if conflicts.is_empty() {
+            self.execute_download_batch(no_conflict, &bucket, provider_idx).await;
+            self.input_mode = InputMode::Normal;
+        } else {
+            self.conflict_state = Some(ConflictResolutionState {
+                conflicts,
+                current_index: 0,
+                resolved: Vec::new(),
+                no_conflict_items: no_conflict,
+                selected_option: 0,
+                bucket,
+                provider_idx,
+                existing_remote_keys: None,
+            });
+            self.input_mode = InputMode::OverwriteConfirmation;
+        }
     }
 
     async fn start_upload(&mut self) {
@@ -1453,35 +1579,38 @@ impl App {
         };
 
         let total_size = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
-        let id = format!("upload_{}_{}", bucket, remote_path);
+        let key_exists = self.objects.iter().any(|o| o.path == remote_path && !o.is_dir);
 
-        let task = AppTask {
-            id: id.clone(),
-            description: format!("Uploading {} to {}", filename, self.get_full_remote_path()),
-            task_type: TaskType::Upload,
-            bytes_transferred: 0,
-            total_size,
-            start_time: std::time::Instant::now(),
+        let item = ConflictOperation::Upload {
+            local_path,
+            remote_path: remote_path.clone(),
+            size: total_size,
         };
-        self.active_tasks.push(task);
 
-        let provider = self.storage_providers[provider_idx].clone_box();
-        let event_tx = self.event_tx.clone();
-        let task_id = id.clone();
-
-        tokio::spawn(async move {
-            let event_tx_inner = event_tx.clone();
-            let task_id_inner = task_id.clone();
-            let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+        if key_exists {
+            let existing_keys: HashSet<String> = self.objects.iter()
+                .filter(|o| !o.is_dir)
+                .map(|o| o.path.to_string())
+                .collect();
+            self.conflict_state = Some(ConflictResolutionState {
+                conflicts: vec![PendingConflict {
+                    source_name: filename,
+                    target_display: remote_path.to_string(),
+                    operation: item,
+                }],
+                current_index: 0,
+                resolved: Vec::new(),
+                no_conflict_items: Vec::new(),
+                selected_option: 0,
+                bucket,
+                provider_idx,
+                existing_remote_keys: Some(existing_keys),
             });
-
-            let result = provider.upload(&bucket, &remote_path, &local_path, progress_cb).await;
-            let _ = event_tx.send(AppEvent::TaskFinished {
-                id: task_id,
-                result: result.map_err(|e| e.to_string())
-            });
-        });
+            self.input_mode = InputMode::OverwriteConfirmation;
+        } else {
+            self.execute_upload_batch(vec![item], &bucket, provider_idx).await;
+            self.input_mode = InputMode::Normal;
+        }
     }
 
     async fn start_folder_upload(&mut self) {
@@ -1537,21 +1666,172 @@ impl App {
             return;
         }
 
-        let total_size: u64 = files.iter()
-            .filter_map(|f| std::fs::metadata(f).ok())
-            .map(|m| m.len())
-            .sum();
-
         let base_remote = if let Some(p) = &self.current_path {
             p.child(&*folder_name)
         } else {
             ObjectPath::from(&*folder_name)
         };
 
-        let id = format!("folder_upload_{}_{}", bucket, base_remote);
+        // Build all upload operations with their remote paths
+        let mut all_items: Vec<ConflictOperation> = Vec::new();
+        for file_path in &files {
+            let relative = file_path.strip_prefix(&folder_path).unwrap_or(file_path);
+            let mut remote_path = base_remote.clone();
+            for component in relative.parent().into_iter().flat_map(|p| p.components()) {
+                if let std::path::Component::Normal(seg) = component {
+                    if let Some(s) = seg.to_str() {
+                        remote_path = remote_path.child(s);
+                    }
+                }
+            }
+            let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            remote_path = remote_path.child(file_name);
+            let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+            all_items.push(ConflictOperation::Upload {
+                local_path: file_path.clone(),
+                remote_path,
+                size,
+            });
+        }
+
+        // Check for remote conflicts by listing existing objects under the target prefix
+        let provider = &self.storage_providers[provider_idx];
+        let existing_keys: HashSet<String> = match provider.list_objects_recursive(&bucket, Some(&base_remote)).await {
+            Ok(objects) => objects.into_iter().filter(|o| !o.is_dir).map(|o| o.path.to_string()).collect(),
+            Err(_) => HashSet::new(),
+        };
+
+        let mut conflicts = Vec::new();
+        let mut no_conflict = Vec::new();
+        for item in all_items {
+            if let ConflictOperation::Upload { ref remote_path, ref local_path, .. } = item {
+                if existing_keys.contains(&remote_path.to_string()) {
+                    conflicts.push(PendingConflict {
+                        source_name: local_path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string(),
+                        target_display: remote_path.to_string(),
+                        operation: item,
+                    });
+                } else {
+                    no_conflict.push(item);
+                }
+            }
+        }
+
+        if conflicts.is_empty() {
+            self.execute_upload_batch(no_conflict, &bucket, provider_idx).await;
+            self.input_mode = InputMode::Normal;
+        } else {
+            self.conflict_state = Some(ConflictResolutionState {
+                conflicts,
+                current_index: 0,
+                resolved: Vec::new(),
+                no_conflict_items: no_conflict,
+                selected_option: 0,
+                bucket,
+                provider_idx,
+                existing_remote_keys: Some(existing_keys),
+            });
+            self.input_mode = InputMode::OverwriteConfirmation;
+        }
+    }
+
+    async fn execute_download_batch(&mut self, items: Vec<ConflictOperation>, bucket: &str, provider_idx: usize) {
+        if items.is_empty() { return; }
+
+        let total_size: u64 = items.iter().map(|item| {
+            if let ConflictOperation::Download { size, .. } = item { *size } else { 0 }
+        }).sum();
+
+        let description = if items.len() == 1 {
+            if let ConflictOperation::Download { ref remote_path, ref local_path, .. } = items[0] {
+                let filename = remote_path.filename().unwrap_or(remote_path.as_ref());
+                format!("Downloading {} to {}", filename, local_path.display())
+            } else {
+                "Downloading".to_string()
+            }
+        } else {
+            format!("Downloading {} items", items.len())
+        };
+
+        let id = format!("download_batch_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         let task = AppTask {
             id: id.clone(),
-            description: format!("Uploading folder {} ({} files) to {}", folder_name, files.len(), self.get_full_remote_path()),
+            description,
+            task_type: TaskType::Download,
+            bytes_transferred: 0,
+            total_size,
+            start_time: std::time::Instant::now(),
+        };
+        self.active_tasks.push(task);
+
+        let file_count = items.len();
+        let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(file_count));
+        let first_error: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
+
+        for item in items {
+            if let ConflictOperation::Download { remote_path, local_path, .. } = item {
+                let provider = self.storage_providers[provider_idx].clone_box();
+                let event_tx = self.event_tx.clone();
+                let task_id = id.clone();
+                let bucket = bucket.to_string();
+                let remaining = remaining.clone();
+                let first_error = first_error.clone();
+
+                tokio::spawn(async move {
+                    let event_tx_inner = event_tx.clone();
+                    let task_id_inner = task_id.clone();
+                    let progress_cb: ProgressCallback = Arc::new(move |bytes| {
+                        let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                    });
+
+                    let result = provider.download(&bucket, &remote_path, &local_path, progress_cb).await;
+                    if let Err(e) = &result {
+                        let mut err = first_error.lock().await;
+                        if err.is_none() {
+                            *err = Some(e.to_string());
+                        }
+                    }
+
+                    if remaining.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                        let err = first_error.lock().await;
+                        let result = match &*err {
+                            Some(e) => Err(e.clone()),
+                            None => Ok(()),
+                        };
+                        let _ = event_tx.send(AppEvent::TaskFinished {
+                            id: task_id,
+                            result,
+                        });
+                    }
+                });
+            }
+        }
+    }
+
+    async fn execute_upload_batch(&mut self, items: Vec<ConflictOperation>, bucket: &str, provider_idx: usize) {
+        if items.is_empty() { return; }
+
+        let total_size: u64 = items.iter().map(|item| {
+            if let ConflictOperation::Upload { size, .. } = item { *size } else { 0 }
+        }).sum();
+
+        let description = if items.len() == 1 {
+            if let ConflictOperation::Upload { ref local_path, .. } = items[0] {
+                let filename = local_path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                format!("Uploading {}", filename)
+            } else {
+                "Uploading".to_string()
+            }
+        } else {
+            format!("Uploading {} items", items.len())
+        };
+
+        let id = format!("upload_batch_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let task = AppTask {
+            id: id.clone(),
+            description,
             task_type: TaskType::Upload,
             bytes_transferred: 0,
             total_size,
@@ -1562,34 +1842,23 @@ impl App {
         let provider = self.storage_providers[provider_idx].clone_box();
         let event_tx = self.event_tx.clone();
         let task_id = id.clone();
+        let bucket = bucket.to_string();
 
         tokio::spawn(async move {
             let mut overall_result: Result<(), String> = Ok(());
 
-            for file_path in &files {
-                let relative = file_path.strip_prefix(&folder_path).unwrap_or(file_path);
-                let mut remote_path = base_remote.clone();
-                for component in relative.parent().into_iter().flat_map(|p| p.components()) {
-                    if let std::path::Component::Normal(seg) = component {
-                        if let Some(s) = seg.to_str() {
-                            remote_path = remote_path.child(s);
-                        }
+            for item in &items {
+                if let ConflictOperation::Upload { local_path, remote_path, .. } = item {
+                    let event_tx_inner = event_tx.clone();
+                    let task_id_inner = task_id.clone();
+                    let progress_cb: ProgressCallback = Arc::new(move |bytes| {
+                        let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                    });
+
+                    if let Err(e) = provider.upload(&bucket, remote_path, local_path, progress_cb).await {
+                        overall_result = Err(format!("{}: {}", local_path.display(), e));
+                        break;
                     }
-                }
-                let file_name = file_path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("file");
-                remote_path = remote_path.child(file_name);
-
-                let event_tx_inner = event_tx.clone();
-                let task_id_inner = task_id.clone();
-                let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                    let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
-                });
-
-                if let Err(e) = provider.upload(&bucket, &remote_path, file_path, progress_cb).await {
-                    overall_result = Err(format!("{}: {}", file_path.display(), e));
-                    break;
                 }
             }
 
@@ -1598,5 +1867,155 @@ impl App {
                 result: overall_result,
             });
         });
+    }
+
+    async fn resolve_current_conflict(&mut self) {
+        let choice = {
+            let state = match &self.conflict_state {
+                Some(s) => s,
+                None => return,
+            };
+            match state.selected_option {
+                0 => ConflictChoice::Overwrite,
+                1 => ConflictChoice::Skip,
+                2 => ConflictChoice::Rename,
+                3 => ConflictChoice::OverwriteAll,
+                4 => ConflictChoice::SkipAll,
+                _ => return,
+            }
+        };
+
+        let state = self.conflict_state.as_mut().unwrap();
+
+        if choice == ConflictChoice::OverwriteAll || choice == ConflictChoice::SkipAll {
+            let effective = if choice == ConflictChoice::OverwriteAll {
+                ConflictChoice::Overwrite
+            } else {
+                ConflictChoice::Skip
+            };
+            while state.current_index < state.conflicts.len() {
+                let conflict = state.conflicts[state.current_index].clone();
+                state.resolved.push((conflict, effective.clone()));
+                state.current_index += 1;
+            }
+        } else {
+            let conflict = state.conflicts[state.current_index].clone();
+            state.resolved.push((conflict, choice));
+            state.current_index += 1;
+        }
+
+        if state.current_index >= state.conflicts.len() {
+            self.finalize_conflict_resolution().await;
+        } else {
+            let state = self.conflict_state.as_mut().unwrap();
+            state.selected_option = 0;
+        }
+    }
+
+    async fn finalize_conflict_resolution(&mut self) {
+        let state = match self.conflict_state.take() {
+            Some(s) => s,
+            None => return,
+        };
+
+        self.input_mode = InputMode::Normal;
+
+        let mut items_to_execute: Vec<ConflictOperation> = state.no_conflict_items;
+
+        for (conflict, choice) in state.resolved {
+            match choice {
+                ConflictChoice::Skip => {}
+                ConflictChoice::Overwrite => {
+                    items_to_execute.push(conflict.operation);
+                }
+                ConflictChoice::Rename => {
+                    match conflict.operation {
+                        ConflictOperation::Download { remote_path, local_path, size } => {
+                            let renamed = auto_rename_local_path(&local_path);
+                            items_to_execute.push(ConflictOperation::Download {
+                                remote_path,
+                                local_path: renamed,
+                                size,
+                            });
+                        }
+                        ConflictOperation::Upload { local_path, remote_path, size } => {
+                            let existing = state.existing_remote_keys.as_ref()
+                                .cloned()
+                                .unwrap_or_default();
+                            let renamed = auto_rename_remote_path(&remote_path, &existing);
+                            items_to_execute.push(ConflictOperation::Upload {
+                                local_path,
+                                remote_path: renamed,
+                                size,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if items_to_execute.is_empty() {
+            return;
+        }
+
+        // Separate downloads and uploads (a single operation only produces one type)
+        let downloads: Vec<ConflictOperation> = items_to_execute.iter()
+            .filter(|i| matches!(i, ConflictOperation::Download { .. }))
+            .cloned()
+            .collect();
+        let uploads: Vec<ConflictOperation> = items_to_execute.into_iter()
+            .filter(|i| matches!(i, ConflictOperation::Upload { .. }))
+            .collect();
+
+        if !downloads.is_empty() {
+            self.execute_download_batch(downloads, &state.bucket, state.provider_idx).await;
+        }
+        if !uploads.is_empty() {
+            self.execute_upload_batch(uploads, &state.bucket, state.provider_idx).await;
+        }
+    }
+}
+
+fn auto_rename_local_path(path: &std::path::Path) -> std::path::PathBuf {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = path.extension().and_then(|e| e.to_str());
+    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut counter = 1u32;
+    loop {
+        let new_name = match ext {
+            Some(e) => format!("{} ({}).{}", stem, counter, e),
+            None => format!("{} ({})", stem, counter),
+        };
+        let candidate = parent.join(&new_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn auto_rename_remote_path(path: &ObjectPath, existing: &HashSet<String>) -> ObjectPath {
+    let path_str = path.to_string();
+    let (dir, file) = if let Some(pos) = path_str.rfind('/') {
+        (&path_str[..=pos], &path_str[pos + 1..])
+    } else {
+        ("", path_str.as_str())
+    };
+    let (stem, ext) = if let Some(dot_pos) = file.rfind('.') {
+        (&file[..dot_pos], Some(&file[dot_pos..]))
+    } else {
+        (file, None)
+    };
+    let mut counter = 1u32;
+    loop {
+        let new_key = match ext {
+            Some(e) => format!("{}{} ({}){}", dir, stem, counter, e),
+            None => format!("{}{} ({})", dir, stem, counter),
+        };
+        if !existing.contains(&new_key) {
+            return ObjectPath::from(new_key);
+        }
+        counter += 1;
     }
 }
