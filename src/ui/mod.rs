@@ -1,3 +1,5 @@
+mod icons;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -77,22 +79,47 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .split(chunks[1]);
 
     // Sidebar
-    let sidebar_items: Vec<ListItem> = app.sidebar_items()
+    let show_icons = app.config.show_icons;
+    let raw_sidebar_items = app.sidebar_items();
+    let sidebar_items: Vec<ListItem> = raw_sidebar_items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(i, item)| {
             match item {
                 crate::app::SidebarItem::Provider(idx) => {
                     if let Some(provider) = app.storage_providers.get(*idx) {
-                        let icon = if app.expanded_providers.contains(idx) { "\u{25bc}" } else { "\u{25b6}" };
-                        ListItem::new(format!("{} ({:?} - {})", icon, provider.provider_type(), provider.name()))
-                            .style(Style::default().add_modifier(Modifier::BOLD))
+                        let expand_icon = if app.expanded_providers.contains(idx) { "\u{25bc}" } else { "\u{25b6}" };
+                        if show_icons {
+                            let picon = icons::provider_icon(&provider.provider_type());
+                            ListItem::new(Line::from(vec![
+                                Span::raw(format!("{} ", expand_icon)),
+                                Span::styled(format!("{} ", picon.symbol), Style::default().fg(picon.color)),
+                                Span::raw(format!("{}", provider.name())),
+                            ])).style(Style::default().add_modifier(Modifier::BOLD))
+                        } else {
+                            ListItem::new(format!("{} ({:?} - {})", expand_icon, provider.provider_type(), provider.name()))
+                                .style(Style::default().add_modifier(Modifier::BOLD))
+                        }
                     } else {
                         ListItem::new("Unknown Provider")
                     }
                 }
                 crate::app::SidebarItem::Bucket { name, .. } => {
-                    ListItem::new(format!("  \u{25cf} {}", name))
-                        .style(Style::default().fg(Color::Cyan))
+                    let is_last = raw_sidebar_items.get(i + 1)
+                        .map_or(true, |next| matches!(next, crate::app::SidebarItem::Provider(_)));
+                    let branch = if is_last { "└─" } else { "├─" };
+                    if show_icons {
+                        ListItem::new(Line::from(vec![
+                            Span::styled(format!(" {} ", branch), Style::default().fg(Color::DarkGray)),
+                            Span::styled(format!("{} ", icons::ICON_BUCKET.symbol), Style::default().fg(icons::ICON_BUCKET.color)),
+                            Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+                        ]))
+                    } else {
+                        ListItem::new(Line::from(vec![
+                            Span::styled(format!(" {} ", branch), Style::default().fg(Color::DarkGray)),
+                            Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+                        ]))
+                    }
                 }
             }
         })
@@ -147,21 +174,32 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let rows: Vec<Row> = filtered_objects.iter().map(|obj| {
             let is_selected = app.selected_paths.contains(&obj.path);
             let checkbox = if is_selected { "[*]" } else { "[ ]" };
-            
-            let mut display_name = obj.path.filename().unwrap_or_else(|| obj.path.as_ref()).to_string();
+
+            let raw_name = obj.path.filename().unwrap_or_else(|| obj.path.as_ref()).to_string();
+            let mut display_name = raw_name.clone();
             if obj.is_dir && !display_name.ends_with('/') {
                 display_name.push('/');
             }
-            
-            let name = format!("{} {}", checkbox, display_name);
+
             let style = if obj.is_dir {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default().fg(Color::White)
             };
-            
+
+            let name_cell = if show_icons {
+                let icon = icons::get_file_icon(&raw_name, obj.is_dir);
+                Cell::from(Line::from(vec![
+                    Span::styled(format!("{} ", checkbox), style),
+                    Span::styled(format!("{} ", icon.symbol), Style::default().fg(icon.color)),
+                    Span::styled(display_name, style),
+                ]))
+            } else {
+                Cell::from(format!("{} {}", checkbox, display_name))
+            };
+
             Row::new(vec![
-                Cell::from(name),
+                name_cell,
                 Cell::from(format_size(obj.size)),
                 Cell::from(obj.last_modified.format("%Y-%m-%d %H:%M").to_string()),
             ]).style(style)

@@ -6,6 +6,12 @@ use anyhow::{Context, Result};
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Config {
     pub providers: Vec<ProviderConfig>,
+    #[serde(default = "default_show_icons")]
+    pub show_icons: bool,
+}
+
+fn default_show_icons() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
