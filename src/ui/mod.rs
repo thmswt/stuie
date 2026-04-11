@@ -2,15 +2,17 @@ mod icons;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Table, Row, Cell, Wrap, WidgetRef},
     Frame,
 };
 use crate::app::{App, Pane, InputMode, TaskType, ConfigTab};
 use crate::config::{KeymapConfig, SettingsConfig};
+use crate::theme::{self, AppTheme, BUILTIN_THEMES};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
+    let theme = theme::get_theme(&app.config.theme);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
@@ -35,15 +37,18 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let max_path_width = path_inner_width.saturating_sub(3); // space for " 📋"
     let shortened_path = shorten_path(&full_path, max_path_width);
 
-    let path_block = Block::default().borders(Borders::ALL).title(" Path ");
-    let path_para = Paragraph::new(format!(" {}", shortened_path)).block(path_block);
+    let path_block = Block::default().borders(Borders::ALL).title(" Path ")
+        .border_style(Style::default().fg(theme.border_inactive));
+    let path_para = Paragraph::new(format!(" {}", shortened_path))
+        .style(Style::default().fg(theme.text_primary))
+        .block(path_block);
     f.render_widget(path_para, top_chunks[0]);
 
     // Render clipboard icon at right edge of path bar
     let path_icon_x = top_chunks[0].x + top_chunks[0].width.saturating_sub(3);
     let path_icon_y = top_chunks[0].y + 1;
     let path_icon_area = Rect::new(path_icon_x, path_icon_y, 2, 1);
-    f.render_widget(Span::styled("📋", Style::default().fg(Color::Cyan)), path_icon_area);
+    f.render_widget(Span::styled("📋", Style::default().fg(theme.accent)), path_icon_area);
     app.copy_button_area = Some(path_icon_area);
 
     let is_search = matches!(app.input_mode, InputMode::Search);
@@ -51,17 +56,17 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let search_block = Block::default()
         .borders(Borders::ALL)
         .title(search_title)
-        .border_style(if is_search { Style::default().fg(Color::Yellow) } else { Style::default() })
+        .border_style(if is_search { Style::default().fg(theme.border_active) } else { Style::default().fg(theme.border_inactive) })
         .border_type(if is_search { BorderType::Thick } else { BorderType::Plain });
     
-    let search_text = if is_search {
-        format!("{}|", app.search_query)
+    let (search_text, search_style) = if is_search {
+        (format!("{}|", app.search_query), Style::default().fg(theme.text_primary))
     } else if app.search_query.is_empty() {
-        " (no filter)".to_string()
+        (" (no filter)".to_string(), Style::default().fg(theme.text_primary))
     } else {
-        format!(" {}", app.search_query)
+        (format!(" {}", app.search_query), Style::default().fg(theme.text_primary))
     };
-    let search_para = Paragraph::new(search_text).block(search_block);
+    let search_para = Paragraph::new(search_text).style(search_style).block(search_block);
     f.render_widget(search_para, top_chunks[1]);
 
     // Middle Panes
@@ -109,14 +114,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     let branch = if is_last { "└─" } else { "├─" };
                     if show_icons {
                         ListItem::new(Line::from(vec![
-                            Span::styled(format!(" {} ", branch), Style::default().fg(Color::DarkGray)),
+                            Span::styled(format!(" {} ", branch), Style::default().fg(theme.text_muted)),
                             Span::styled(format!("{} ", icons::ICON_BUCKET.symbol), Style::default().fg(icons::ICON_BUCKET.color)),
-                            Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+                            Span::styled(name.clone(), Style::default().fg(theme.accent)),
                         ]))
                     } else {
                         ListItem::new(Line::from(vec![
-                            Span::styled(format!(" {} ", branch), Style::default().fg(Color::DarkGray)),
-                            Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
+                            Span::styled(format!(" {} ", branch), Style::default().fg(theme.text_muted)),
+                            Span::styled(name.clone(), Style::default().fg(theme.accent)),
                         ]))
                     }
                 }
@@ -129,15 +134,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .borders(Borders::ALL)
         .title(" Buckets ")
         .border_style(if is_sidebar_active {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.border_active)
         } else {
-            Style::default()
+            Style::default().fg(theme.border_inactive)
         })
         .border_type(if is_sidebar_active { BorderType::Thick } else { BorderType::Plain });
 
     let sidebar_list = List::new(sidebar_items)
         .block(sidebar_block)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray).fg(Color::Yellow))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(theme.highlight_bg).fg(theme.highlight_fg))
         .highlight_symbol("> ");
     f.render_stateful_widget(sidebar_list, middle_chunks[0], &mut app.sidebar_state);
 
@@ -153,11 +158,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL)
             .title(format!(" Objects ({}) ", filtered_objects.len()))
             .border_style(if is_main_active && !is_normal_mode {
-                Style::default()
+                Style::default().fg(theme.border_inactive)
             } else if is_main_active {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(theme.border_active)
             } else {
-                Style::default()
+                Style::default().fg(theme.border_inactive)
             })
             .border_type(if is_main_active && is_normal_mode { 
                 BorderType::Thick 
@@ -181,9 +186,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
 
             let style = if obj.is_dir {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.folder_color)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.file_color)
             };
 
             let name_cell = if show_icons {
@@ -211,11 +216,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         ])
         .header(header)
         .block(main_block)
-        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray).fg(Color::Yellow))
+        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(theme.highlight_bg).fg(theme.highlight_fg))
         .highlight_symbol("> ");
         
         // Preview Pane preparation
-        let preview_block = Block::default().borders(Borders::ALL).title(" Preview ");
+        let preview_block = Block::default().borders(Borders::ALL).title(" Preview ")
+            .border_style(Style::default().fg(theme.border_inactive));
         let preview_inner = preview_block.inner(middle_chunks[2]);
         let preview_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -233,7 +239,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     if obj.is_dir { "Folder" } else { "File" },
                     obj.last_modified.format("%Y-%m-%d %H:%M:%S")
                 );
-                let metadata_para = Paragraph::new(metadata).style(Style::default().fg(Color::Cyan));
+                let metadata_para = Paragraph::new(metadata).style(Style::default().fg(theme.accent));
                 f.render_widget(metadata_para, preview_chunks[0]);
 
                 if !obj.is_dir {
@@ -281,6 +287,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
             (Some(ConfigTab::Settings), false) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Toggle: Enter | Save: s | Close: q "
+            }
+            (Some(ConfigTab::Theme), _) => {
+                " Switch Tab: Tab/S-Tab | Navigate: j/k | Save: s | Close: q "
             }
             _ => " Save: s | Close: q "
         }
@@ -343,9 +352,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
 
     let bottom_bar = Paragraph::new(truncated_status)
+        .style(Style::default().fg(theme.text_primary))
         .block(Block::default()
             .title(" Task ")
             .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border_inactive))
         );
     f.render_widget(bottom_bar, chunks[2]);
 
@@ -353,33 +364,33 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let task_icon_x = chunks[2].x + chunks[2].width.saturating_sub(3);
     let task_icon_y = chunks[2].y + 1;
     let task_icon_area = Rect::new(task_icon_x, task_icon_y, 2, 1);
-    f.render_widget(Span::styled("📋", Style::default().fg(Color::Cyan)), task_icon_area);
+    f.render_widget(Span::styled("📋", Style::default().fg(theme.accent)), task_icon_area);
     app.task_copy_area = Some(task_icon_area);
 
     let keybindings_para = Paragraph::new(keybindings)
-        .style(Style::default().fg(Color::Gray));
+        .style(Style::default().fg(theme.text_secondary));
     f.render_widget(keybindings_para, chunks[3]);
 
     // Modals
     if app.show_config_modal {
-        render_config_modal(f, app);
+        render_config_modal(f, app, theme);
     }
 
     match app.input_mode {
         InputMode::DownloadPrompt => {
-            render_file_explorer(f, app, " Download to ");
+            render_file_explorer(f, app, " Download to ", theme);
         }
         InputMode::UploadPrompt => {
-            render_file_explorer(f, app, " Select file to upload (Enter: File | F: Upload Folder) ");
+            render_file_explorer(f, app, " Select file to upload (Enter: File | F: Upload Folder) ", theme);
         }
         InputMode::DeleteConfirmation => {
-            render_delete_confirmation(f, app);
+            render_delete_confirmation(f, app, theme);
         }
         InputMode::CreateFolderPrompt => {
-            render_prompt(f, " New Folder Name ", &app.prompt_input);
+            render_prompt(f, " New Folder Name ", &app.prompt_input, theme);
         }
         InputMode::OverwriteConfirmation => {
-            render_overwrite_confirmation(f, app);
+            render_overwrite_confirmation(f, app, theme);
         }
         _ => {}
     }
@@ -390,11 +401,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let block = Block::default()
             .title(" Confirm Delete ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Red));
+            .border_style(Style::default().fg(theme.error));
         let text = format!("Are you sure you want to delete provider #{}?\n(y)es / (n)o", index + 1);
         let para = Paragraph::new(text)
             .block(block)
-            .style(Style::default().fg(Color::Red));
+            .style(Style::default().fg(theme.error));
         f.render_widget(para, area);
     }
 
@@ -404,10 +415,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let block = Block::default()
             .title(" Success ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Green));
+            .border_style(Style::default().fg(theme.success));
         let paragraph = Paragraph::new(msg.as_str())
             .block(block)
-            .style(Style::default().fg(Color::Green));
+            .style(Style::default().fg(theme.success));
         f.render_widget(paragraph, area);
     }
 
@@ -493,20 +504,20 @@ Actions:
         let block = Block::default()
             .title(" Error ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Red));
+            .border_style(Style::default().fg(theme.error));
         
         let inner_area = block.inner(area);
         f.render_widget(block, area);
 
         let error_line = Line::from(vec![
-            Span::styled("📋", Style::default().fg(Color::Cyan)),
+            Span::styled("📋", Style::default().fg(theme.accent)),
             Span::raw(" "),
             Span::raw(error.as_str()),
         ]);
         
         let paragraph = Paragraph::new(error_line)
             .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::Red));
+            .style(Style::default().fg(theme.error));
         
         f.render_widget(paragraph, inner_area);
 
@@ -515,18 +526,18 @@ Actions:
     }
 }
 
-fn render_prompt(f: &mut Frame, title: &str, input: &str) {
+fn render_prompt(f: &mut Frame, title: &str, input: &str, theme: &AppTheme) {
     let area = centered_rect(60, 20, f.area());
     f.render_widget(Clear, area);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme.border_active));
     let para = Paragraph::new(format!("{}|", input)).block(block);
     f.render_widget(para, area);
 }
 
-fn render_delete_confirmation(f: &mut Frame, app: &App) {
+fn render_delete_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
     let mut paths_to_delete = Vec::new();
     if !app.selected_paths.is_empty() {
         paths_to_delete.extend(app.selected_paths.iter().map(|p| p.to_string()));
@@ -542,7 +553,7 @@ fn render_delete_confirmation(f: &mut Frame, app: &App) {
     let block = Block::default()
         .title(" Confirm Batch Delete ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(theme.error));
     
     let list_items: Vec<ListItem> = paths_to_delete.iter()
         .map(|p| ListItem::new(format!("  - {}", p)))
@@ -559,11 +570,11 @@ fn render_delete_confirmation(f: &mut Frame, app: &App) {
     f.render_widget(list, chunks[0]);
     
     let confirm_text = format!("Delete {} items? (y)es / (n)o", paths_to_delete.len());
-    let confirm_para = Paragraph::new(confirm_text).style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    let confirm_para = Paragraph::new(confirm_text).style(Style::default().fg(theme.error).add_modifier(Modifier::BOLD));
     f.render_widget(confirm_para, chunks[1]);
 }
 
-fn render_overwrite_confirmation(f: &mut Frame, app: &App) {
+fn render_overwrite_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
     let state = match &app.conflict_state {
         Some(s) => s,
         None => return,
@@ -585,7 +596,7 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme.border_active));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -605,7 +616,7 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App) {
         conflict.target_display,
     );
     let info_para = Paragraph::new(info_text)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(theme.text_primary))
         .wrap(Wrap { trim: true });
     f.render_widget(info_para, chunks[0]);
 
@@ -621,13 +632,13 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App) {
         let is_selected = i == state.selected_option;
         let prefix = if is_selected { "> " } else { "  " };
         let style = if is_selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme.text_primary)
         };
         ListItem::new(Line::from(vec![
             Span::raw(prefix),
-            Span::styled(format!("[{}] ", key), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("[{}] ", key), Style::default().fg(theme.accent)),
             Span::styled(*label, style),
         ]))
     }).collect();
@@ -637,17 +648,17 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App) {
     f.render_widget(options_list, chunks[1]);
 
     let hint = Paragraph::new(" Enter: confirm | Esc: cancel")
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(theme.text_muted));
     f.render_widget(hint, chunks[2]);
 }
 
-fn render_config_modal(f: &mut Frame, app: &mut App) {
+fn render_config_modal(f: &mut Frame, app: &mut App, theme: &AppTheme) {
     let area = centered_rect(80, 80, f.area());
     f.render_widget(Clear, area);
     let block = Block::default()
         .title(" Configuration ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme.modal_border));
     f.render_widget(block, area);
 
     let inner_area = Rect::new(area.x + 2, area.y + 1, area.width - 4, area.height - 3);
@@ -664,12 +675,12 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
             if *tab == state.active_tab {
                 Span::styled(
                     format!(" {} ", tab.label()),
-                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme.tab_active_fg).bg(theme.tab_active_bg).add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::styled(
                     format!(" {} ", tab.label()),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.text_muted),
                 )
             }
         }).collect();
@@ -679,32 +690,32 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
         let content_area = main_chunks[2];
 
         match state.active_tab {
-            ConfigTab::Providers => render_config_providers(f, state, content_area),
-            ConfigTab::Keymap => render_config_keymap(f, state, content_area),
-            ConfigTab::Settings => render_config_settings(f, state, content_area),
+            ConfigTab::Providers => render_config_providers(f, state, content_area, theme),
+            ConfigTab::Keymap => render_config_keymap(f, state, content_area, theme),
+            ConfigTab::Settings => render_config_settings(f, state, content_area, theme),
+            ConfigTab::Theme => render_config_theme(f, state, content_area, theme),
         }
     }
 }
 
-fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect) {
+fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
         .split(area);
 
-    // Providers List (Left)
     let providers: Vec<ListItem> = state.providers.iter().enumerate().map(|(i, p)| {
         let status = if p.enabled { "[ON]" } else { "[OFF]" };
         let label = format!("{}. {} {}", i + 1, if p.name.is_empty() { "(unnamed)" } else { &p.name }, status);
 
         let style = if i == state.selected_provider_index && !state.edit_mode {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
         } else if i == state.selected_provider_index {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.highlight_fg)
         } else if p.enabled {
-            Style::default().fg(Color::Green)
+            Style::default().fg(theme.success)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted)
         };
         ListItem::new(label).style(style)
     }).collect();
@@ -712,7 +723,6 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
         .block(Block::default().title(" Providers (j/k) ").borders(Borders::ALL));
     f.render_widget(providers_list, chunks[0]);
 
-    // Fields (Right)
     if let Some(provider) = state.providers.get(state.selected_provider_index) {
         let fields_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -731,7 +741,7 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
         for i in 0..8 {
             let is_selected = state.edit_mode && state.selected_field_index == i;
             let style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
+                Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
             } else {
                 Style::default()
             };
@@ -774,7 +784,7 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
     }
 }
 
-fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect) {
+fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
     let block = Block::default().title(" Keybindings ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -782,15 +792,14 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
     let mut items: Vec<ListItem> = Vec::new();
 
     for i in 0..KeymapConfig::FIELD_COUNT {
-        // Insert section header if applicable
         if let Some(header) = KeymapConfig::section_header(i) {
-            let header_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+            let header_style = Style::default().fg(theme.text_primary).add_modifier(Modifier::BOLD);
             if i > 0 {
-                items.push(ListItem::new(Line::raw(""))); // blank separator
+                items.push(ListItem::new(Line::raw("")));
             }
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(format!("  {} ", header), header_style),
-                Span::styled("─".repeat(30), Style::default().fg(Color::DarkGray)),
+                Span::styled("─".repeat(30), Style::default().fg(theme.text_muted)),
             ])));
         }
 
@@ -803,9 +812,9 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
         };
 
         let style = if state.keymap_editing && is_selected {
-            Style::default().fg(Color::Black).bg(Color::Yellow)
+            Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
         } else if is_selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -815,9 +824,9 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
             Span::raw(prefix),
             Span::styled(format!("  {:<16}", name), style),
             Span::styled(format!("  {}", value), if state.keymap_editing && is_selected {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
+                Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
             } else {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.accent)
             }),
         ])));
     }
@@ -826,7 +835,7 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
     f.render_widget(list, inner);
 }
 
-fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect) {
+fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
     let block = Block::default().title(" Settings ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -842,7 +851,7 @@ fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, a
         };
 
         let style = if is_selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -857,13 +866,91 @@ fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, a
         ListItem::new(Line::from(vec![
             Span::raw(prefix),
             Span::styled(format!("{:<20}", name), style),
-            Span::styled(format!("  {}", value), Style::default().fg(Color::Cyan)),
-            Span::styled(hint, Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("  {}", value), Style::default().fg(theme.accent)),
+            Span::styled(hint, Style::default().fg(theme.text_muted)),
         ]))
     }).collect();
 
     let list = List::new(items);
     f.render_widget(list, inner);
+}
+
+fn render_config_theme(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)].as_ref())
+        .split(area);
+
+    // Theme list (left)
+    let theme_items: Vec<ListItem> = BUILTIN_THEMES.iter().enumerate().map(|(i, t)| {
+        let is_selected = i == state.selected_theme_index;
+        let prefix = if is_selected { "> " } else { "  " };
+        let style = if is_selected {
+            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_primary)
+        };
+        ListItem::new(Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(t.name, style),
+            Span::styled(format!("  {}", t.description), Style::default().fg(theme.text_muted)),
+        ]))
+    }).collect();
+    let theme_list = List::new(theme_items)
+        .block(Block::default().title(" Themes (j/k) ").borders(Borders::ALL));
+    f.render_widget(theme_list, chunks[0]);
+
+    // Preview swatch (right)
+    let preview_block = Block::default().title(" Preview ").borders(Borders::ALL);
+    let preview_inner = preview_block.inner(chunks[1]);
+    f.render_widget(preview_block, chunks[1]);
+
+    let preview_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(preview_inner);
+
+    let t = &BUILTIN_THEMES[state.selected_theme_index];
+
+    f.render_widget(Paragraph::new(Line::from(vec![
+        Span::styled("  border active ", Style::default().fg(t.border_active)),
+        Span::styled(" border inactive ", Style::default().fg(t.border_inactive)),
+    ])), preview_rows[0]);
+    f.render_widget(Paragraph::new(Line::from(vec![
+        Span::styled("  text primary ", Style::default().fg(t.text_primary)),
+        Span::styled(" secondary ", Style::default().fg(t.text_secondary)),
+        Span::styled(" muted ", Style::default().fg(t.text_muted)),
+    ])), preview_rows[1]);
+    f.render_widget(Paragraph::new(
+        Span::styled("  accent color sample", Style::default().fg(t.accent)),
+    ), preview_rows[2]);
+    f.render_widget(Paragraph::new(Line::from(vec![
+        Span::styled("  file.txt ", Style::default().fg(t.file_color)),
+        Span::styled(" folder/ ", Style::default().fg(t.folder_color)),
+    ])), preview_rows[3]);
+    f.render_widget(Paragraph::new(
+        Span::styled("  highlight row ", Style::default().fg(t.highlight_fg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)),
+    ), preview_rows[4]);
+    f.render_widget(Paragraph::new(
+        Span::styled("  editing field ", Style::default().fg(t.editing_fg).bg(t.editing_bg)),
+    ), preview_rows[5]);
+    f.render_widget(Paragraph::new(
+        Span::styled("  active tab ", Style::default().fg(t.tab_active_fg).bg(t.tab_active_bg).add_modifier(Modifier::BOLD)),
+    ), preview_rows[6]);
+    f.render_widget(Paragraph::new(
+        Span::styled("  modal border", Style::default().fg(t.modal_border)),
+    ), preview_rows[7]);
+    f.render_widget(Paragraph::new(Line::from(vec![
+        Span::styled("  error ", Style::default().fg(t.error)),
+        Span::styled(" success ", Style::default().fg(t.success)),
+        Span::styled(" warning ", Style::default().fg(t.warning)),
+    ])), preview_rows[8]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -936,13 +1023,13 @@ fn format_hex(data: &[u8]) -> String {
     lines.join("\n")
 }
 
-fn render_file_explorer(f: &mut Frame, app: &App, title: &str) {
+fn render_file_explorer(f: &mut Frame, app: &App, title: &str, theme: &AppTheme) {
     let area = centered_rect(80, 80, f.area());
     f.render_widget(Clear, area);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme.border_active));
 
     let inner_area = block.inner(area);
     f.render_widget(block, area);
@@ -954,9 +1041,9 @@ fn render_file_explorer(f: &mut Frame, app: &App, title: &str) {
             .split(inner_area);
 
         let search_style = if app.file_explorer_search_active {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.border_active)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted)
         };
         let search_text = if app.file_explorer_search_active {
             format!(" /{}|", app.file_explorer_filter)

@@ -32,16 +32,18 @@ pub enum ConfigTab {
     Providers,
     Keymap,
     Settings,
+    Theme,
 }
 
 impl ConfigTab {
-    pub const ALL: [ConfigTab; 3] = [ConfigTab::Providers, ConfigTab::Keymap, ConfigTab::Settings];
+    pub const ALL: [ConfigTab; 4] = [ConfigTab::Providers, ConfigTab::Keymap, ConfigTab::Settings, ConfigTab::Theme];
 
     pub fn label(&self) -> &'static str {
         match self {
             ConfigTab::Providers => "Providers",
             ConfigTab::Keymap => "Keymap",
             ConfigTab::Settings => "Settings",
+            ConfigTab::Theme => "Theme",
         }
     }
 
@@ -49,15 +51,17 @@ impl ConfigTab {
         match self {
             ConfigTab::Providers => ConfigTab::Keymap,
             ConfigTab::Keymap => ConfigTab::Settings,
-            ConfigTab::Settings => ConfigTab::Providers,
+            ConfigTab::Settings => ConfigTab::Theme,
+            ConfigTab::Theme => ConfigTab::Providers,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            ConfigTab::Providers => ConfigTab::Settings,
+            ConfigTab::Providers => ConfigTab::Theme,
             ConfigTab::Keymap => ConfigTab::Providers,
             ConfigTab::Settings => ConfigTab::Keymap,
+            ConfigTab::Theme => ConfigTab::Settings,
         }
     }
 }
@@ -77,6 +81,9 @@ pub struct ConfigModalState {
     // Settings tab
     pub settings: SettingsConfig,
     pub selected_setting_index: usize,
+    // Theme tab
+    pub selected_theme_index: usize,
+    pub original_theme: String,
 }
 
 #[derive(Clone)]
@@ -661,6 +668,10 @@ impl App {
             InputMode::Normal => match key_code {
                 crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
                     if self.show_config_modal {
+                        // Revert theme if not saved
+                        if let Some(state) = &self.config_modal_state {
+                            self.config.theme = state.original_theme.clone();
+                        }
                         self.show_config_modal = false;
                         self.config_modal_state = None;
                     } else if self.show_help {
@@ -740,11 +751,17 @@ impl App {
                             keymap_input: String::new(),
                             settings: self.config.settings.clone(),
                             selected_setting_index: 0,
+                            selected_theme_index: crate::theme::theme_index(&self.config.theme),
+                            original_theme: self.config.theme.clone(),
                         });
                         if self.config_modal_state.as_ref().unwrap().providers.is_empty() {
                             self.config_modal_state.as_mut().unwrap().providers.push(ProviderConfig::default());
                         }
                     } else {
+                        // Revert theme if not saved
+                        if let Some(state) = &self.config_modal_state {
+                            self.config.theme = state.original_theme.clone();
+                        }
                         self.config_modal_state = None;
                     }
                 }
@@ -774,6 +791,12 @@ impl App {
                                         state.selected_setting_index += 1;
                                     }
                                 }
+                                ConfigTab::Theme => {
+                                    if state.selected_theme_index < crate::theme::BUILTIN_THEMES.len().saturating_sub(1) {
+                                        state.selected_theme_index += 1;
+                                        self.config.theme = crate::theme::BUILTIN_THEMES[state.selected_theme_index].name.to_string();
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -797,6 +820,12 @@ impl App {
                                 ConfigTab::Settings => {
                                     if state.selected_setting_index > 0 {
                                         state.selected_setting_index -= 1;
+                                    }
+                                }
+                                ConfigTab::Theme => {
+                                    if state.selected_theme_index > 0 {
+                                        state.selected_theme_index -= 1;
+                                        self.config.theme = crate::theme::BUILTIN_THEMES[state.selected_theme_index].name.to_string();
                                     }
                                 }
                             }
@@ -833,6 +862,7 @@ impl App {
                                     self.input_mode = InputMode::Editing;
                                 }
                             }
+                            ConfigTab::Theme => {} // themes are selected with j/k, not edited
                         }
                     }
                 }
@@ -857,6 +887,9 @@ impl App {
                                     self.search_query.clear();
                                     self.main_list_state.select(None);
                                     self.preview_data = None;
+                                }
+                                if let Some(ms) = &mut self.config_modal_state {
+                                    ms.original_theme = self.config.theme.clone();
                                 }
                                 let config_path = dirs::home_dir().unwrap().join(".config").join("stuie").join("config.json");
                                 self.save_message = Some(format!("Configuration saved to {}!", config_path.display()));
@@ -901,6 +934,7 @@ impl App {
                                         _ => {}
                                     }
                                 }
+                                ConfigTab::Theme => {} // already applied live via j/k
                             }
                         }
                     } else {

@@ -10,6 +10,8 @@ pub struct Config {
     pub keymap: KeymapConfig,
     #[serde(default)]
     pub settings: SettingsConfig,
+    #[serde(default)]
+    pub theme: String,
     // Legacy field — migrated to settings.show_icons on load
     #[serde(default = "default_show_icons", skip_serializing)]
     pub show_icons: bool,
