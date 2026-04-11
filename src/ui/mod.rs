@@ -7,7 +7,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Table, Row, Cell, Wrap, WidgetRef},
     Frame,
 };
-use crate::app::{App, Pane, InputMode, TaskType};
+use crate::app::{App, Pane, InputMode, TaskType, ConfigTab};
+use crate::config::{KeymapConfig, SettingsConfig};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -77,7 +78,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .split(chunks[1]);
 
     // Sidebar
-    let show_icons = app.config.show_icons;
+    let show_icons = app.config.settings.show_icons;
     let raw_sidebar_items = app.sidebar_items();
     let sidebar_items: Vec<ListItem> = raw_sidebar_items
         .iter()
@@ -260,10 +261,28 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // Bottom Bar
     let keybindings = if app.show_config_modal {
-        if app.config_modal_state.as_ref().is_some_and(|s| s.edit_mode) {
-            " Next/Prev Field: Tab/S-Tab | Finish Editing: Enter/Esc  | Type to Input | Delete: Backspace | Type/HTTP: j/k "
-        } else {
-            " Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: c | Help: ? "
+        let active_tab = app.config_modal_state.as_ref().map(|s| s.active_tab);
+        let is_editing = matches!(app.input_mode, InputMode::Editing);
+        match (active_tab, is_editing) {
+            (Some(ConfigTab::Providers), true) => {
+                " Next/Prev Field: Tab/S-Tab | Finish Editing: Enter/Esc | Type to Input | Delete: Backspace | Type/HTTP: j/k "
+            }
+            (Some(ConfigTab::Providers), false) => {
+                " Switch Tab: Tab/S-Tab | Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: q "
+            }
+            (Some(ConfigTab::Keymap), true) => {
+                " Type new key | Confirm: Enter | Cancel: Esc "
+            }
+            (Some(ConfigTab::Keymap), false) => {
+                " Switch Tab: Tab/S-Tab | Navigate: j/k | Edit: e/Enter | Save: s | Close: q "
+            }
+            (Some(ConfigTab::Settings), true) => {
+                " Type value | Confirm: Enter | Cancel: Esc "
+            }
+            (Some(ConfigTab::Settings), false) => {
+                " Switch Tab: Tab/S-Tab | Navigate: j/k | Toggle: Enter | Save: s | Close: q "
+            }
+            _ => " Save: s | Close: q "
         }
     } else if matches!(app.input_mode, InputMode::OverwriteConfirmation) {
         " Overwrite: o | Skip: s | Rename: r | Overwrite All: O | Skip All: S | Cancel: Esc "
@@ -397,7 +416,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         f.render_widget(Clear, area);
 
         let (help_title, help_text) = if app.show_config_modal {
-            if app.config_modal_state.as_ref().is_some_and(|s| s.edit_mode) {
+            if matches!(app.input_mode, InputMode::Editing) {
                 (" Help (Editing Mode) ", "\
 \nField Navigation:
   Tab       : Next field
@@ -406,26 +425,38 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 Editing:
   Type      : Input text into the selected field
   Backspace : Delete character
+  Opt+Bksp  : Delete previous word
+  Cmd+Bksp  : Clear line
   Enter     : Finish editing
-  Esc       : Finish editing
+  Esc       : Cancel editing
 
 Special Fields:
   j/k or \u{2191}/\u{2193} : Cycle options (Type / Allow HTTP)
 ")
             } else {
-                (" Help (Normal Mode) ", "\
-\nProvider Navigation:
-  j/k or \u{2191}/\u{2193} : Navigate providers
+                (" Help (Configuration) ", "\
+\nTabs:
+  Tab/S-Tab  : Switch between Providers / Keymap / Settings
+
+Providers Tab:
+  j/k        : Navigate providers
   e / Enter  : Edit provider fields
   Enter      : Toggle enabled/disabled
-
-Provider Management:
   a          : Add new provider
   D          : Delete selected provider
-  s          : Save configuration
+
+Keymap Tab:
+  j/k        : Navigate keybindings
+  e / Enter  : Edit selected keybinding
+
+Settings Tab:
+  j/k        : Navigate settings
+  Enter      : Toggle boolean settings
+  e          : Edit numeric settings
 
 General:
-  c          : Close without saving
+  s          : Save configuration
+  q / Esc    : Close without saving
   ?          : Toggle Help
 ")
             }
@@ -619,109 +650,220 @@ fn render_config_modal(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(block, area);
 
-    let inner_area = Rect::new(area.x + 2, area.y + 2, area.width - 4, area.height - 4);
+    let inner_area = Rect::new(area.x + 2, area.y + 1, area.width - 4, area.height - 3);
+
+    if let Some(state) = &app.config_modal_state {
+        // Tab bar + content layout
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+            .split(inner_area);
+
+        // Render tab bar
+        let tab_spans: Vec<Span> = ConfigTab::ALL.iter().map(|tab| {
+            if *tab == state.active_tab {
+                Span::styled(
+                    format!(" {} ", tab.label()),
+                    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(
+                    format!(" {} ", tab.label()),
+                    Style::default().fg(Color::DarkGray),
+                )
+            }
+        }).collect();
+        let tab_line = Paragraph::new(Line::from(tab_spans));
+        f.render_widget(tab_line, main_chunks[0]);
+
+        let content_area = main_chunks[2];
+
+        match state.active_tab {
+            ConfigTab::Providers => render_config_providers(f, state, content_area),
+            ConfigTab::Keymap => render_config_keymap(f, state, content_area),
+            ConfigTab::Settings => render_config_settings(f, state, content_area),
+        }
+    }
+}
+
+fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-        .split(inner_area);
+        .split(area);
 
-    if let Some(state) = &app.config_modal_state {
-        // Providers List (Left)
-        let providers: Vec<ListItem> = state.providers.iter().enumerate().map(|(i, p)| {
-            let status = if p.enabled { "[ENABLED]" } else { "[DISABLED]" };
-            let label = format!("{}. {} {}", i + 1, if p.name.is_empty() { "(unnamed)" } else { &p.name }, status);
+    // Providers List (Left)
+    let providers: Vec<ListItem> = state.providers.iter().enumerate().map(|(i, p)| {
+        let status = if p.enabled { "[ON]" } else { "[OFF]" };
+        let label = format!("{}. {} {}", i + 1, if p.name.is_empty() { "(unnamed)" } else { &p.name }, status);
 
-            let style = if i == state.selected_provider_index && !state.edit_mode {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else if i == state.selected_provider_index {
-                Style::default().fg(Color::Yellow)
-            } else if p.enabled {
-                Style::default().fg(Color::Green)
+        let style = if i == state.selected_provider_index && !state.edit_mode {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else if i == state.selected_provider_index {
+            Style::default().fg(Color::Yellow)
+        } else if p.enabled {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        ListItem::new(label).style(style)
+    }).collect();
+    let providers_list = List::new(providers)
+        .block(Block::default().title(" Providers (j/k) ").borders(Borders::ALL));
+    f.render_widget(providers_list, chunks[0]);
+
+    // Fields (Right)
+    if let Some(provider) = state.providers.get(state.selected_provider_index) {
+        let fields_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), Constraint::Length(3), Constraint::Length(3),
+                Constraint::Length(3), Constraint::Length(3), Constraint::Length(3),
+                Constraint::Length(3), Constraint::Length(3),
+            ].as_ref())
+            .split(chunks[1]);
+
+        let field_names = [
+            "Name *", "Type *", "Region *", "Bucket Name (Optional)",
+            "Endpoint (Optional)", "Access Key *", "Secret Key *", "Allow HTTP (Optional)"
+        ];
+
+        for i in 0..8 {
+            let is_selected = state.edit_mode && state.selected_field_index == i;
+            let style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default()
             };
-            ListItem::new(label).style(style)
-        }).collect();
-        let providers_list = List::new(providers)
-            .block(Block::default().title(" Providers (j/k) ").borders(Borders::ALL));
-        f.render_widget(providers_list, chunks[0]);
 
-        // Fields (Right)
-        if let Some(provider) = state.providers.get(state.selected_provider_index) {
-            let fields_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3), // Name
-                    Constraint::Length(3), // Type
-                    Constraint::Length(3), // Region
-                    Constraint::Length(3), // Bucket
-                    Constraint::Length(3), // Endpoint
-                    Constraint::Length(3), // Access Key
-                    Constraint::Length(3), // Secret Key
-                    Constraint::Length(3), // Allow HTTP
-                ].as_ref())
-                .split(chunks[1]);
+            let mut value = match i {
+                0 => provider.name.clone(),
+                1 => format!("{:?}", provider.provider_type),
+                2 => provider.region.clone().unwrap_or_default(),
+                3 => provider.bucket_name.clone().unwrap_or_default(),
+                4 => provider.endpoint.clone().unwrap_or_default(),
+                5 => provider.access_key_id.clone().unwrap_or_default(),
+                6 => provider.secret_access_key.clone().unwrap_or_default(),
+                7 => provider.allow_http.unwrap_or(false).to_string(),
+                _ => String::new(),
+            };
 
-            let field_names = [
-                "Name *", 
-                "Type *", 
-                "Region *", 
-                "Bucket Name (Optional)", 
-                "Endpoint (Optional)", 
-                "Access Key *", 
-                "Secret Key *", 
-                "Allow HTTP (Optional)"
-            ];
+            let title = if is_selected {
+                format!("{} [EDITING]", field_names[i])
+            } else {
+                field_names[i].to_string()
+            };
 
-            for i in 0..8 {
-                let is_selected = state.edit_mode && state.selected_field_index == i;
-                let style = if is_selected {
-                    Style::default().fg(Color::Black).bg(Color::Yellow)
-                } else if !state.edit_mode && i == 0 { // Just some highlight if not editing
-                    Style::default()
+            if is_selected {
+                if i == 1 {
+                     value = format!("[ S3 | GCS | Azure ] - Current: {:?}", provider.provider_type);
+                } else if i == 7 {
+                     value = format!("[ true | false ] - Current: {}", provider.allow_http.unwrap_or(false));
                 } else {
-                    Style::default()
-                };
-
-                let mut value = match i {
-                    0 => provider.name.clone(),
-                    1 => format!("{:?}", provider.provider_type),
-                    2 => provider.region.clone().unwrap_or_default(),
-                    3 => provider.bucket_name.clone().unwrap_or_default(),
-                    4 => provider.endpoint.clone().unwrap_or_default(),
-                    5 => provider.access_key_id.clone().unwrap_or_default(),
-                    6 => provider.secret_access_key.clone().unwrap_or_default(),
-                    7 => provider.allow_http.unwrap_or(false).to_string(),
-                    _ => String::new(),
-                };
-
-                let title = if is_selected {
-                    format!("{} [EDITING]", field_names[i])
-                } else {
-                    field_names[i].to_string()
-                };
-
-                if is_selected {
-                    // Show all options for "Type" field when selected
-                    if i == 1 {
-                         value = format!("[ S3 | GCS | Azure ] - Current: {:?}", provider.provider_type);
-                    } else if i == 7 {
-                         value = format!("[ true | false ] - Current: {}", provider.allow_http.unwrap_or(false));
-                    } else {
-                         value.push('_'); // Cursor
-                    }
+                     value.push('_');
                 }
-
-                let field_block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(style);
-                let field_para = Paragraph::new(value).block(field_block);
-                f.render_widget(field_para, fields_chunks[i]);
             }
 
+            let field_block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(style);
+            let field_para = Paragraph::new(value).block(field_block);
+            f.render_widget(field_para, fields_chunks[i]);
         }
     }
+}
+
+fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect) {
+    let block = Block::default().title(" Keybindings ").borders(Borders::ALL);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    for i in 0..KeymapConfig::FIELD_COUNT {
+        // Insert section header if applicable
+        if let Some(header) = KeymapConfig::section_header(i) {
+            let header_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+            if i > 0 {
+                items.push(ListItem::new(Line::raw(""))); // blank separator
+            }
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("  {} ", header), header_style),
+                Span::styled("─".repeat(30), Style::default().fg(Color::DarkGray)),
+            ])));
+        }
+
+        let is_selected = i == state.selected_keymap_index;
+        let name = KeymapConfig::field_name(i);
+        let value = if state.keymap_editing && is_selected {
+            format!("{}|", state.keymap_input)
+        } else {
+            state.keymap.get_field(i).to_string()
+        };
+
+        let style = if state.keymap_editing && is_selected {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else if is_selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        let prefix = if is_selected { "> " } else { "  " };
+        items.push(ListItem::new(Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(format!("  {:<16}", name), style),
+            Span::styled(format!("  {}", value), if state.keymap_editing && is_selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Cyan)
+            }),
+        ])));
+    }
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+}
+
+fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect) {
+    let block = Block::default().title(" Settings ").borders(Borders::ALL);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<ListItem> = (0..SettingsConfig::FIELD_COUNT).map(|i| {
+        let is_selected = i == state.selected_setting_index;
+        let name = SettingsConfig::field_name(i);
+        let value = match i {
+            0 => if state.settings.show_icons { "true" } else { "false" }.to_string(),
+            1 => if state.settings.confirm_delete { "true" } else { "false" }.to_string(),
+            2 => state.settings.preview_max_bytes.to_string(),
+            _ => String::new(),
+        };
+
+        let style = if is_selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        let hint = match i {
+            0 | 1 => " (Enter to toggle)",
+            2 => " (e to edit)",
+            _ => "",
+        };
+
+        let prefix = if is_selected { "> " } else { "  " };
+        ListItem::new(Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(format!("{:<20}", name), style),
+            Span::styled(format!("  {}", value), Style::default().fg(Color::Cyan)),
+            Span::styled(hint, Style::default().fg(Color::DarkGray)),
+        ]))
+    }).collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

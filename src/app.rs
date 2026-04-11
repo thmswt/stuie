@@ -1,4 +1,4 @@
-use crate::config::{Config, ProviderConfig, ProviderType};
+use crate::config::{Config, ProviderConfig, ProviderType, KeymapConfig, SettingsConfig};
 use crate::storage::{Bucket, Object, StorageBackend, ProgressCallback};
 use object_store::path::Path as ObjectPath;
 use crate::storage::s3::S3Storage;
@@ -27,11 +27,56 @@ pub enum Pane {
     Main,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigTab {
+    Providers,
+    Keymap,
+    Settings,
+}
+
+impl ConfigTab {
+    pub const ALL: [ConfigTab; 3] = [ConfigTab::Providers, ConfigTab::Keymap, ConfigTab::Settings];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            ConfigTab::Providers => "Providers",
+            ConfigTab::Keymap => "Keymap",
+            ConfigTab::Settings => "Settings",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            ConfigTab::Providers => ConfigTab::Keymap,
+            ConfigTab::Keymap => ConfigTab::Settings,
+            ConfigTab::Settings => ConfigTab::Providers,
+        }
+    }
+
+    pub fn prev(&self) -> Self {
+        match self {
+            ConfigTab::Providers => ConfigTab::Settings,
+            ConfigTab::Keymap => ConfigTab::Providers,
+            ConfigTab::Settings => ConfigTab::Keymap,
+        }
+    }
+}
+
 pub struct ConfigModalState {
+    pub active_tab: ConfigTab,
+    // Providers tab
     pub providers: Vec<ProviderConfig>,
     pub selected_provider_index: usize,
     pub selected_field_index: usize,
-    pub edit_mode: bool, // true if editing a field, false if navigating providers
+    pub edit_mode: bool,
+    // Keymap tab
+    pub keymap: KeymapConfig,
+    pub selected_keymap_index: usize,
+    pub keymap_editing: bool,
+    pub keymap_input: String,
+    // Settings tab
+    pub settings: SettingsConfig,
+    pub selected_setting_index: usize,
 }
 
 #[derive(Clone)]
@@ -684,10 +729,17 @@ impl App {
                     self.show_config_modal = !self.show_config_modal;
                     if self.show_config_modal {
                         self.config_modal_state = Some(ConfigModalState {
+                            active_tab: ConfigTab::Providers,
                             providers: self.config.providers.clone(),
                             selected_provider_index: 0,
                             selected_field_index: 0,
                             edit_mode: false,
+                            keymap: self.config.keymap.clone(),
+                            selected_keymap_index: 0,
+                            keymap_editing: false,
+                            keymap_input: String::new(),
+                            settings: self.config.settings.clone(),
+                            selected_setting_index: 0,
                         });
                         if self.config_modal_state.as_ref().unwrap().providers.is_empty() {
                             self.config_modal_state.as_mut().unwrap().providers.push(ProviderConfig::default());
@@ -698,7 +750,7 @@ impl App {
                 }
                 crossterm::event::KeyCode::Char('D') if self.show_config_modal => {
                     if let Some(state) = &self.config_modal_state {
-                        if !state.providers.is_empty() {
+                        if state.active_tab == ConfigTab::Providers && !state.providers.is_empty() {
                              self.pending_delete_index = Some(state.selected_provider_index);
                         }
                     }
@@ -706,8 +758,22 @@ impl App {
                 crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
                     if self.show_config_modal {
                         if let Some(state) = &mut self.config_modal_state {
-                            if state.selected_provider_index < state.providers.len().saturating_sub(1) {
-                                state.selected_provider_index += 1;
+                            match state.active_tab {
+                                ConfigTab::Providers => {
+                                    if state.selected_provider_index < state.providers.len().saturating_sub(1) {
+                                        state.selected_provider_index += 1;
+                                    }
+                                }
+                                ConfigTab::Keymap => {
+                                    if state.selected_keymap_index < KeymapConfig::FIELD_COUNT.saturating_sub(1) {
+                                        state.selected_keymap_index += 1;
+                                    }
+                                }
+                                ConfigTab::Settings => {
+                                    if state.selected_setting_index < SettingsConfig::FIELD_COUNT.saturating_sub(1) {
+                                        state.selected_setting_index += 1;
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -717,8 +783,22 @@ impl App {
                 crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
                     if self.show_config_modal {
                         if let Some(state) = &mut self.config_modal_state {
-                            if state.selected_provider_index > 0 {
-                                state.selected_provider_index -= 1;
+                            match state.active_tab {
+                                ConfigTab::Providers => {
+                                    if state.selected_provider_index > 0 {
+                                        state.selected_provider_index -= 1;
+                                    }
+                                }
+                                ConfigTab::Keymap => {
+                                    if state.selected_keymap_index > 0 {
+                                        state.selected_keymap_index -= 1;
+                                    }
+                                }
+                                ConfigTab::Settings => {
+                                    if state.selected_setting_index > 0 {
+                                        state.selected_setting_index -= 1;
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -727,21 +807,40 @@ impl App {
                 }
                 crossterm::event::KeyCode::Char('a') if self.show_config_modal => {
                     if let Some(state) = &mut self.config_modal_state {
-                        state.providers.push(ProviderConfig::default());
-                        state.selected_provider_index = state.providers.len() - 1;
+                        if state.active_tab == ConfigTab::Providers {
+                            state.providers.push(ProviderConfig::default());
+                            state.selected_provider_index = state.providers.len() - 1;
+                        }
                     }
                 }
                 crossterm::event::KeyCode::Char('e') if self.show_config_modal => {
                     if let Some(state) = &mut self.config_modal_state {
-                        if !state.providers.is_empty() {
-                            self.input_mode = InputMode::Editing;
-                            state.edit_mode = true;
+                        match state.active_tab {
+                            ConfigTab::Providers => {
+                                if !state.providers.is_empty() {
+                                    self.input_mode = InputMode::Editing;
+                                    state.edit_mode = true;
+                                }
+                            }
+                            ConfigTab::Keymap => {
+                                state.keymap_editing = true;
+                                state.keymap_input = state.keymap.get_field(state.selected_keymap_index).to_string();
+                                self.input_mode = InputMode::Editing;
+                            }
+                            ConfigTab::Settings => {
+                                // 'e' only for numeric fields (preview_max_bytes = index 2)
+                                if state.selected_setting_index == 2 {
+                                    self.input_mode = InputMode::Editing;
+                                }
+                            }
                         }
                     }
                 }
                 crossterm::event::KeyCode::Char('s') if self.show_config_modal => {
                     if let Some(state) = &self.config_modal_state {
                         self.config.providers = state.providers.clone();
+                        self.config.keymap = state.keymap.clone();
+                        self.config.settings = state.settings.clone();
                         match self.config.save() {
                             Ok(_) => {
                                 // Check if the active provider was disabled
@@ -768,13 +867,40 @@ impl App {
                     }
                 }
                 crossterm::event::KeyCode::Tab | crossterm::event::KeyCode::BackTab => {
-                    self.toggle_pane();
+                    if self.show_config_modal {
+                        if let Some(state) = &mut self.config_modal_state {
+                            state.active_tab = if key_code == crossterm::event::KeyCode::Tab {
+                                state.active_tab.next()
+                            } else {
+                                state.active_tab.prev()
+                            };
+                        }
+                    } else {
+                        self.toggle_pane();
+                    }
                 }
                 crossterm::event::KeyCode::Enter => {
                     if self.show_config_modal {
                         if let Some(state) = &mut self.config_modal_state {
-                            if let Some(provider) = state.providers.get_mut(state.selected_provider_index) {
-                                provider.enabled = !provider.enabled;
+                            match state.active_tab {
+                                ConfigTab::Providers => {
+                                    if let Some(provider) = state.providers.get_mut(state.selected_provider_index) {
+                                        provider.enabled = !provider.enabled;
+                                    }
+                                }
+                                ConfigTab::Keymap => {
+                                    state.keymap_editing = true;
+                                    state.keymap_input = state.keymap.get_field(state.selected_keymap_index).to_string();
+                                    self.input_mode = InputMode::Editing;
+                                }
+                                ConfigTab::Settings => {
+                                    match state.selected_setting_index {
+                                        0 => state.settings.show_icons = !state.settings.show_icons,
+                                        1 => state.settings.confirm_delete = !state.settings.confirm_delete,
+                                        2 => self.input_mode = InputMode::Editing,
+                                        _ => {}
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -788,109 +914,184 @@ impl App {
                 }
                 _ => {}
             },
-            InputMode::Editing => match key_code {
-                crossterm::event::KeyCode::Esc => {
-                    self.input_mode = InputMode::Normal;
-                    if let Some(state) = &mut self.config_modal_state {
-                        state.edit_mode = false;
-                    }
-                }
-                crossterm::event::KeyCode::Tab => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        state.selected_field_index = (state.selected_field_index + 1) % 8;
-                    }
-                }
-                crossterm::event::KeyCode::BackTab => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        if state.selected_field_index == 0 {
-                            state.selected_field_index = 7;
-                        } else {
-                            state.selected_field_index -= 1;
+            InputMode::Editing => {
+                let active_tab = self.config_modal_state.as_ref().map(|s| s.active_tab);
+                match active_tab {
+                    Some(ConfigTab::Keymap) => match key_code {
+                        crossterm::event::KeyCode::Esc => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                state.keymap_editing = false;
+                                state.keymap_input.clear();
+                            }
+                            self.input_mode = InputMode::Normal;
                         }
-                    }
-                }
-                crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        let provider = &mut state.providers[state.selected_provider_index];
-                        if state.selected_field_index == 1 {
-                             provider.provider_type = match provider.provider_type {
-                                 ProviderType::S3 => ProviderType::GCS,
-                                 ProviderType::GCS => ProviderType::Azure,
-                                 ProviderType::Azure => ProviderType::S3,
-                             };
-                        } else if state.selected_field_index == 7 {
-                             provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                        crossterm::event::KeyCode::Enter => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                let value = state.keymap_input.clone();
+                                if !value.is_empty() {
+                                    state.keymap.set_field(state.selected_keymap_index, value);
+                                }
+                                state.keymap_editing = false;
+                                state.keymap_input.clear();
+                            }
+                            self.input_mode = InputMode::Normal;
                         }
-                    }
-                }
-                crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        let provider = &mut state.providers[state.selected_provider_index];
-                        if state.selected_field_index == 1 {
-                             provider.provider_type = match provider.provider_type {
-                                 ProviderType::S3 => ProviderType::Azure,
-                                 ProviderType::GCS => ProviderType::S3,
-                                 ProviderType::Azure => ProviderType::GCS,
-                             };
-                        } else if state.selected_field_index == 7 {
-                             provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
-                        }
-                    }
-                }
-                crossterm::event::KeyCode::Enter => {
-                    self.input_mode = InputMode::Normal;
-                    if let Some(state) = &mut self.config_modal_state {
-                        state.edit_mode = false;
-                    }
-                }
-                crossterm::event::KeyCode::Backspace => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
-                            if let Some(field) = get_editing_field_mut(state) { field.clear(); }
-                        } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
-                            if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
-                        } else {
-                            let provider = &mut state.providers[state.selected_provider_index];
-                            match state.selected_field_index {
-                                0 => { provider.name.pop(); }
-                                2 => { if let Some(r) = &mut provider.region { r.pop(); } }
-                                3 => { if let Some(b) = &mut provider.bucket_name { b.pop(); } }
-                                4 => { if let Some(e) = &mut provider.endpoint { e.pop(); } }
-                                5 => { if let Some(a) = &mut provider.access_key_id { a.pop(); } }
-                                6 => { if let Some(s) = &mut provider.secret_access_key { s.pop(); } }
-                                _ => {}
+                        crossterm::event::KeyCode::Backspace => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                                    state.keymap_input.clear();
+                                } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                    delete_previous_word(&mut state.keymap_input);
+                                } else {
+                                    state.keymap_input.pop();
+                                }
                             }
                         }
-                    }
-                }
-                crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
-                    }
-                }
-                crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        if let Some(field) = get_editing_field_mut(state) { field.clear(); }
-                    }
-                }
-                crossterm::event::KeyCode::Char(c) => {
-                    if let Some(state) = &mut self.config_modal_state {
-                        let provider = &mut state.providers[state.selected_provider_index];
-                        match state.selected_field_index {
-                            0 => { provider.name.push(c); }
-                            1 | 7 => {
-                                // Ignore char input for Type and HTTP, only cycle with arrows/j/k
+                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                delete_previous_word(&mut state.keymap_input);
                             }
-                            2 => { provider.region.get_or_insert_with(String::new).push(c); }
-                            3 => { provider.bucket_name.get_or_insert_with(String::new).push(c); }
-                            4 => { provider.endpoint.get_or_insert_with(String::new).push(c); }
-                            5 => { provider.access_key_id.get_or_insert_with(String::new).push(c); }
-                            6 => { provider.secret_access_key.get_or_insert_with(String::new).push(c); }
-                            _ => {}
                         }
+                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                state.keymap_input.clear();
+                            }
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                state.keymap_input.push(c);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Some(ConfigTab::Settings) => match key_code {
+                        crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Enter => {
+                            self.input_mode = InputMode::Normal;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if state.selected_setting_index == 2 {
+                                    let s = &mut state.settings.preview_max_bytes;
+                                    *s /= 10;
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char(c) if c.is_ascii_digit() => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if state.selected_setting_index == 2 {
+                                    let s = &mut state.settings.preview_max_bytes;
+                                    *s = s.saturating_mul(10).saturating_add(c.to_digit(10).unwrap_or(0) as usize);
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => match key_code {
+                        // Providers editing (existing logic)
+                        crossterm::event::KeyCode::Esc => {
+                            self.input_mode = InputMode::Normal;
+                            if let Some(state) = &mut self.config_modal_state {
+                                state.edit_mode = false;
+                            }
+                        }
+                        crossterm::event::KeyCode::Tab => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                state.selected_field_index = (state.selected_field_index + 1) % 8;
+                            }
+                        }
+                        crossterm::event::KeyCode::BackTab => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if state.selected_field_index == 0 {
+                                    state.selected_field_index = 7;
+                                } else {
+                                    state.selected_field_index -= 1;
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                let provider = &mut state.providers[state.selected_provider_index];
+                                if state.selected_field_index == 1 {
+                                     provider.provider_type = match provider.provider_type {
+                                         ProviderType::S3 => ProviderType::GCS,
+                                         ProviderType::GCS => ProviderType::Azure,
+                                         ProviderType::Azure => ProviderType::S3,
+                                     };
+                                } else if state.selected_field_index == 7 {
+                                     provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                let provider = &mut state.providers[state.selected_provider_index];
+                                if state.selected_field_index == 1 {
+                                     provider.provider_type = match provider.provider_type {
+                                         ProviderType::S3 => ProviderType::Azure,
+                                         ProviderType::GCS => ProviderType::S3,
+                                         ProviderType::Azure => ProviderType::GCS,
+                                     };
+                                } else if state.selected_field_index == 7 {
+                                     provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            self.input_mode = InputMode::Normal;
+                            if let Some(state) = &mut self.config_modal_state {
+                                state.edit_mode = false;
+                            }
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                                    if let Some(field) = get_editing_field_mut(state) { field.clear(); }
+                                } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                    if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
+                                } else {
+                                    let provider = &mut state.providers[state.selected_provider_index];
+                                    match state.selected_field_index {
+                                        0 => { provider.name.pop(); }
+                                        2 => { if let Some(r) = &mut provider.region { r.pop(); } }
+                                        3 => { if let Some(b) = &mut provider.bucket_name { b.pop(); } }
+                                        4 => { if let Some(e) = &mut provider.endpoint { e.pop(); } }
+                                        5 => { if let Some(a) = &mut provider.access_key_id { a.pop(); } }
+                                        6 => { if let Some(s) = &mut provider.secret_access_key { s.pop(); } }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if let Some(field) = get_editing_field_mut(state) { field.clear(); }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                let provider = &mut state.providers[state.selected_provider_index];
+                                match state.selected_field_index {
+                                    0 => { provider.name.push(c); }
+                                    1 | 7 => {
+                                        // Ignore char input for Type and HTTP, only cycle with arrows/j/k
+                                    }
+                                    2 => { provider.region.get_or_insert_with(String::new).push(c); }
+                                    3 => { provider.bucket_name.get_or_insert_with(String::new).push(c); }
+                                    4 => { provider.endpoint.get_or_insert_with(String::new).push(c); }
+                                    5 => { provider.access_key_id.get_or_insert_with(String::new).push(c); }
+                                    6 => { provider.secret_access_key.get_or_insert_with(String::new).push(c); }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                _ => {}
             }
             InputMode::Search => match key_code {
                 crossterm::event::KeyCode::Esc => {
