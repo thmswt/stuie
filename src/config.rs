@@ -275,6 +275,7 @@ pub struct ProviderConfig {
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<String>,
     pub allow_http: Option<bool>,
+    pub project: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -295,6 +296,7 @@ impl Default for ProviderConfig {
             access_key_id: None,
             secret_access_key: None,
             allow_http: None,
+            project: None,
             enabled: true,
         }
     }
@@ -306,6 +308,108 @@ pub enum ProviderType {
     S3,
     GCS,
     Azure,
+}
+
+impl ProviderType {
+    pub fn scheme(&self) -> &'static str {
+        match self {
+            ProviderType::S3 => "s3",
+            ProviderType::GCS => "gs",
+            ProviderType::Azure => "az",
+        }
+    }
+
+    pub fn field_count(&self) -> usize {
+        match self {
+            ProviderType::S3 | ProviderType::Azure => 8,
+            ProviderType::GCS => 5,
+        }
+    }
+
+    pub fn field_names(&self) -> &'static [&'static str] {
+        match self {
+            ProviderType::S3 | ProviderType::Azure => &[
+                "Name *", "Type *", "Region *", "Bucket Name (Optional)",
+                "Endpoint (Optional)", "Access Key *", "Secret Key *", "Allow HTTP (Optional)",
+            ],
+            ProviderType::GCS => &[
+                "Name *", "Type *", "Project", "Bucket Name (Optional)",
+                "Credentials Path (Optional)",
+            ],
+        }
+    }
+}
+
+impl ProviderConfig {
+    /// Returns the display value for a config field by index (provider-type-aware).
+    pub fn get_field_value(&self, index: usize) -> String {
+        match self.provider_type {
+            ProviderType::S3 | ProviderType::Azure => match index {
+                0 => self.name.clone(),
+                1 => format!("{:?}", self.provider_type),
+                2 => self.region.clone().unwrap_or_default(),
+                3 => self.bucket_name.clone().unwrap_or_default(),
+                4 => self.endpoint.clone().unwrap_or_default(),
+                5 => self.access_key_id.clone().unwrap_or_default(),
+                6 => self.secret_access_key.clone().unwrap_or_default(),
+                7 => self.allow_http.unwrap_or(false).to_string(),
+                _ => String::new(),
+            },
+            ProviderType::GCS => match index {
+                0 => self.name.clone(),
+                1 => format!("{:?}", self.provider_type),
+                2 => self.project.clone().unwrap_or_default(),
+                3 => self.bucket_name.clone().unwrap_or_default(),
+                4 => self.credentials_path.clone().unwrap_or_default(),
+                _ => String::new(),
+            },
+        }
+    }
+
+    /// Returns a mutable reference to the string field at the given index.
+    /// Returns None for cycle/toggle fields (Type, Allow HTTP).
+    pub fn get_field_mut(&mut self, index: usize) -> Option<&mut String> {
+        match self.provider_type {
+            ProviderType::S3 | ProviderType::Azure => match index {
+                0 => Some(&mut self.name),
+                2 => Some(self.region.get_or_insert_with(String::new)),
+                3 => Some(self.bucket_name.get_or_insert_with(String::new)),
+                4 => Some(self.endpoint.get_or_insert_with(String::new)),
+                5 => Some(self.access_key_id.get_or_insert_with(String::new)),
+                6 => Some(self.secret_access_key.get_or_insert_with(String::new)),
+                _ => None,
+            },
+            ProviderType::GCS => match index {
+                0 => Some(&mut self.name),
+                2 => Some(self.project.get_or_insert_with(String::new)),
+                3 => Some(self.bucket_name.get_or_insert_with(String::new)),
+                4 => Some(self.credentials_path.get_or_insert_with(String::new)),
+                _ => None,
+            },
+        }
+    }
+
+    /// Whether this field index is a cycle/toggle field (not free-text editable).
+    pub fn is_cycle_field(&self, index: usize) -> bool {
+        if index == 1 { return true; } // Type field — always a cycle
+        match self.provider_type {
+            ProviderType::S3 | ProviderType::Azure => index == 7, // Allow HTTP
+            ProviderType::GCS => false,
+        }
+    }
+
+    /// The editing hint shown when a cycle field is selected.
+    pub fn cycle_field_hint(&self, index: usize) -> Option<String> {
+        if index == 1 {
+            return Some(format!("[ S3 | GCS | Azure ] - Current: {:?}", self.provider_type));
+        }
+        match (&self.provider_type, index) {
+            (ProviderType::S3 | ProviderType::Azure, 7) => {
+                Some(format!("[ true | false ] - Current: {}", self.allow_http.unwrap_or(false)))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Config {

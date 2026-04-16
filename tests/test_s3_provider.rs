@@ -17,6 +17,8 @@ async fn test_s3_provider_with_minio() {
         access_key_id: Some("minioadmin".to_string()),
         secret_access_key: Some("minioadmin".to_string()),
         allow_http: Some(true),
+        project: None,
+        enabled: true,
     };
 
     let storage = S3Storage::new(config, 0).await.expect("Failed to create S3 storage");
@@ -59,6 +61,8 @@ async fn test_s3_transfer() {
         access_key_id: Some("minioadmin".to_string()),
         secret_access_key: Some("minioadmin".to_string()),
         allow_http: Some(true),
+        project: None,
+        enabled: true,
     };
 
     let storage = S3Storage::new(config, 0).await.expect("Failed to create S3 storage");
@@ -117,6 +121,8 @@ async fn test_s3_provider_list_all_buckets() {
         access_key_id: Some("minioadmin".to_string()),
         secret_access_key: Some("minioadmin".to_string()),
         allow_http: Some(true),
+        project: None,
+        enabled: true,
     };
 
     let storage = S3Storage::new(config, 0).await.expect("Failed to create S3 storage");
@@ -138,6 +144,8 @@ async fn test_s3_provider_with_empty_bucket_name() {
         access_key_id: Some("minioadmin".to_string()),
         secret_access_key: Some("minioadmin".to_string()),
         allow_http: Some(true),
+        project: None,
+        enabled: true,
     };
 
     let storage = S3Storage::new(config, 0).await.expect("Failed to create S3 storage");

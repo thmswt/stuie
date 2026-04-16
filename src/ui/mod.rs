@@ -108,20 +108,25 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         ListItem::new("Unknown Provider")
                     }
                 }
-                crate::app::SidebarItem::Bucket { name, .. } => {
+                crate::app::SidebarItem::Bucket { name, location, .. } => {
                     let is_last = raw_sidebar_items.get(i + 1)
                         .map_or(true, |next| matches!(next, crate::app::SidebarItem::Provider(_)));
                     let branch = if is_last { "└─" } else { "├─" };
+                    let loc_suffix = location.as_ref()
+                        .map(|l| format!(" ({})", l.to_lowercase()))
+                        .unwrap_or_default();
                     if show_icons {
                         ListItem::new(Line::from(vec![
                             Span::styled(format!(" {} ", branch), Style::default().fg(theme.text_muted)),
                             Span::styled(format!("{} ", icons::ICON_BUCKET.symbol), Style::default().fg(icons::ICON_BUCKET.color)),
                             Span::styled(name.clone(), Style::default().fg(theme.accent)),
+                            Span::styled(loc_suffix, Style::default().fg(theme.text_muted)),
                         ]))
                     } else {
                         ListItem::new(Line::from(vec![
                             Span::styled(format!(" {} ", branch), Style::default().fg(theme.text_muted)),
                             Span::styled(name.clone(), Style::default().fg(theme.accent)),
+                            Span::styled(loc_suffix, Style::default().fg(theme.text_muted)),
                         ]))
                     }
                 }
@@ -724,21 +729,19 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
     f.render_widget(providers_list, chunks[0]);
 
     if let Some(provider) = state.providers.get(state.selected_provider_index) {
+        let field_names = provider.provider_type.field_names();
+        let field_count = provider.provider_type.field_count();
+
+        let constraints: Vec<Constraint> = (0..field_count)
+            .map(|_| Constraint::Length(3))
+            .collect();
+
         let fields_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), Constraint::Length(3), Constraint::Length(3),
-                Constraint::Length(3), Constraint::Length(3), Constraint::Length(3),
-                Constraint::Length(3), Constraint::Length(3),
-            ].as_ref())
+            .constraints(constraints)
             .split(chunks[1]);
 
-        let field_names = [
-            "Name *", "Type *", "Region *", "Bucket Name (Optional)",
-            "Endpoint (Optional)", "Access Key *", "Secret Key *", "Allow HTTP (Optional)"
-        ];
-
-        for i in 0..8 {
+        for i in 0..field_count {
             let is_selected = state.edit_mode && state.selected_field_index == i;
             let style = if is_selected {
                 Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
@@ -746,17 +749,7 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
                 Style::default()
             };
 
-            let mut value = match i {
-                0 => provider.name.clone(),
-                1 => format!("{:?}", provider.provider_type),
-                2 => provider.region.clone().unwrap_or_default(),
-                3 => provider.bucket_name.clone().unwrap_or_default(),
-                4 => provider.endpoint.clone().unwrap_or_default(),
-                5 => provider.access_key_id.clone().unwrap_or_default(),
-                6 => provider.secret_access_key.clone().unwrap_or_default(),
-                7 => provider.allow_http.unwrap_or(false).to_string(),
-                _ => String::new(),
-            };
+            let mut value = provider.get_field_value(i);
 
             let title = if is_selected {
                 format!("{} [EDITING]", field_names[i])
@@ -765,12 +758,10 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
             };
 
             if is_selected {
-                if i == 1 {
-                     value = format!("[ S3 | GCS | Azure ] - Current: {:?}", provider.provider_type);
-                } else if i == 7 {
-                     value = format!("[ true | false ] - Current: {}", provider.allow_http.unwrap_or(false));
+                if let Some(hint) = provider.cycle_field_hint(i) {
+                    value = hint;
                 } else {
-                     value.push('_');
+                    value.push('_');
                 }
             }
 

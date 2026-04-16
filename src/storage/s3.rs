@@ -102,6 +102,7 @@ impl StorageBackend for S3Storage {
                 return Ok(vec![Bucket {
                     name: bucket_name.clone(),
                     provider_index: self.provider_index,
+                    location: None,
                 }]);
             }
         }
@@ -117,6 +118,7 @@ impl StorageBackend for S3Storage {
                     Some(Bucket {
                         name,
                         provider_index: self.provider_index,
+                        location: None,
                     })
                 }
             })

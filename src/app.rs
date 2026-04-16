@@ -2,6 +2,7 @@ use crate::config::{Config, ProviderConfig, ProviderType, KeymapConfig, Settings
 use crate::storage::{Bucket, Object, StorageBackend, ProgressCallback};
 use object_store::path::Path as ObjectPath;
 use crate::storage::s3::S3Storage;
+use crate::storage::gcs::GcsStorage;
 use ratatui::widgets::{ListState, TableState};
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashSet;
@@ -89,7 +90,7 @@ pub struct ConfigModalState {
 #[derive(Clone)]
 pub enum SidebarItem {
     Provider(usize),
-    Bucket { provider_index: usize, name: String },
+    Bucket { provider_index: usize, name: String, location: Option<String> },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -304,6 +305,7 @@ impl App {
                         items.push(SidebarItem::Bucket {
                             provider_index: i,
                             name: bucket.name.clone(),
+                            location: bucket.location.clone(),
                         });
                     }
                 }
@@ -314,6 +316,7 @@ impl App {
 
     pub async fn refresh_storage_providers(&mut self) {
         let mut storage_providers: Vec<Box<dyn StorageBackend>> = Vec::new();
+        let mut project_backfills: Vec<(usize, String)> = Vec::new();
         for (i, provider_config) in self.config.providers.iter().enumerate() {
             if !provider_config.enabled {
                 continue;
@@ -325,8 +328,24 @@ impl App {
                         Err(e) => tracing::error!("Failed to initialize S3 provider {}: {}", provider_config.name, e),
                     }
                 }
+                ProviderType::GCS => {
+                    match GcsStorage::new(provider_config.clone(), i).await {
+                        Ok(storage) => {
+                            if provider_config.project.as_ref().map_or(true, |p| p.trim().is_empty()) {
+                                if let Some(project) = storage.detected_project_id() {
+                                    project_backfills.push((i, project.to_string()));
+                                }
+                            }
+                            storage_providers.push(Box::new(storage));
+                        }
+                        Err(e) => tracing::error!("Failed to initialize GCS provider {}: {}", provider_config.name, e),
+                    }
+                }
                 _ => {}
             }
+        }
+        for (i, project) in project_backfills {
+            self.config.providers[i].project = Some(project);
         }
         self.storage_providers = storage_providers;
 
@@ -1030,19 +1049,21 @@ impl App {
                         }
                         crossterm::event::KeyCode::Tab => {
                             if let Some(state) = &mut self.config_modal_state {
-                                state.selected_field_index = (state.selected_field_index + 1) % 8;
+                                let count = state.providers[state.selected_provider_index].provider_type.field_count();
+                                state.selected_field_index = (state.selected_field_index + 1) % count;
                             }
                         }
                         crossterm::event::KeyCode::BackTab => {
                             if let Some(state) = &mut self.config_modal_state {
+                                let count = state.providers[state.selected_provider_index].provider_type.field_count();
                                 if state.selected_field_index == 0 {
-                                    state.selected_field_index = 7;
+                                    state.selected_field_index = count - 1;
                                 } else {
                                     state.selected_field_index -= 1;
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        crossterm::event::KeyCode::Down => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let provider = &mut state.providers[state.selected_provider_index];
                                 if state.selected_field_index == 1 {
@@ -1051,12 +1072,17 @@ impl App {
                                          ProviderType::GCS => ProviderType::Azure,
                                          ProviderType::Azure => ProviderType::S3,
                                      };
-                                } else if state.selected_field_index == 7 {
-                                     provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                                } else if provider.is_cycle_field(state.selected_field_index) {
+                                     match (&provider.provider_type, state.selected_field_index) {
+                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
+                                             provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                                         }
+                                         _ => {}
+                                     }
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        crossterm::event::KeyCode::Up => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let provider = &mut state.providers[state.selected_provider_index];
                                 if state.selected_field_index == 1 {
@@ -1065,8 +1091,13 @@ impl App {
                                          ProviderType::GCS => ProviderType::S3,
                                          ProviderType::Azure => ProviderType::GCS,
                                      };
-                                } else if state.selected_field_index == 7 {
-                                     provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                                } else if provider.is_cycle_field(state.selected_field_index) {
+                                     match (&provider.provider_type, state.selected_field_index) {
+                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
+                                             provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
+                                         }
+                                         _ => {}
+                                     }
                                 }
                             }
                         }
@@ -1082,17 +1113,8 @@ impl App {
                                     if let Some(field) = get_editing_field_mut(state) { field.clear(); }
                                 } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
                                     if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
-                                } else {
-                                    let provider = &mut state.providers[state.selected_provider_index];
-                                    match state.selected_field_index {
-                                        0 => { provider.name.pop(); }
-                                        2 => { if let Some(r) = &mut provider.region { r.pop(); } }
-                                        3 => { if let Some(b) = &mut provider.bucket_name { b.pop(); } }
-                                        4 => { if let Some(e) = &mut provider.endpoint { e.pop(); } }
-                                        5 => { if let Some(a) = &mut provider.access_key_id { a.pop(); } }
-                                        6 => { if let Some(s) = &mut provider.secret_access_key { s.pop(); } }
-                                        _ => {}
-                                    }
+                                } else if let Some(field) = get_editing_field_mut(state) {
+                                    field.pop();
                                 }
                             }
                         }
@@ -1108,18 +1130,8 @@ impl App {
                         }
                         crossterm::event::KeyCode::Char(c) => {
                             if let Some(state) = &mut self.config_modal_state {
-                                let provider = &mut state.providers[state.selected_provider_index];
-                                match state.selected_field_index {
-                                    0 => { provider.name.push(c); }
-                                    1 | 7 => {
-                                        // Ignore char input for Type and HTTP, only cycle with arrows/j/k
-                                    }
-                                    2 => { provider.region.get_or_insert_with(String::new).push(c); }
-                                    3 => { provider.bucket_name.get_or_insert_with(String::new).push(c); }
-                                    4 => { provider.endpoint.get_or_insert_with(String::new).push(c); }
-                                    5 => { provider.access_key_id.get_or_insert_with(String::new).push(c); }
-                                    6 => { provider.secret_access_key.get_or_insert_with(String::new).push(c); }
-                                    _ => {}
+                                if let Some(field) = get_editing_field_mut(state) {
+                                    field.push(c);
                                 }
                             }
                         }
@@ -1457,10 +1469,17 @@ impl App {
         let event_tx = self.event_tx.clone();
         let item_count = paths_to_delete.len();
         let id = format!("delete_{}", std::time::Instant::now().elapsed().as_nanos());
-        
+
+        let scheme = self.storage_providers[provider_idx].provider_type().scheme();
+        let description = if item_count == 1 {
+            format!("Deleting {}://{}/{}", scheme, bucket, paths_to_delete[0])
+        } else {
+            format!("Deleting {} items", item_count)
+        };
+
         let task = AppTask {
             id: id.clone(),
-            description: format!("Deleting {} items", item_count),
+            description,
             task_type: TaskType::Delete,
             bytes_transferred: 0,
             total_size: 0,
@@ -1501,7 +1520,7 @@ impl App {
                                                     matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == *p_idx)
                                                 }) {
                                                     // Auto-select the first bucket
-                                                    if let SidebarItem::Bucket { provider_index, name } = bucket_item {
+                                                    if let SidebarItem::Bucket { provider_index, name, .. } = bucket_item {
                                                         self.sidebar_state.select(Some(item_idx));
                                                         self.current_bucket = Some(name.clone());
                                                         self.current_path = None;
@@ -1538,7 +1557,7 @@ impl App {
                                     }
                                 }
                             }
-                            SidebarItem::Bucket { provider_index, name } => {
+                            SidebarItem::Bucket { provider_index, name, .. } => {
                                 if let Some(provider) = self.storage_providers.get(*provider_index) {
                                     self.active_provider_index = Some(*provider_index);
                                     self.current_bucket = Some(name.clone());
@@ -2049,10 +2068,10 @@ impl App {
             if let ConflictOperation::Download { size, .. } = item { *size } else { 0 }
         }).sum();
 
+        let scheme = self.storage_providers[provider_idx].provider_type().scheme();
         let description = if items.len() == 1 {
             if let ConflictOperation::Download { ref remote_path, ref local_path, .. } = items[0] {
-                let filename = remote_path.filename().unwrap_or(remote_path.as_ref());
-                format!("Downloading {} to {}", filename, local_path.display())
+                format!("Downloading {}://{}/{} to {}", scheme, bucket, remote_path, local_path.display())
             } else {
                 "Downloading".to_string()
             }
@@ -2123,10 +2142,10 @@ impl App {
             if let ConflictOperation::Upload { size, .. } = item { *size } else { 0 }
         }).sum();
 
+        let scheme = self.storage_providers[provider_idx].provider_type().scheme();
         let description = if items.len() == 1 {
-            if let ConflictOperation::Upload { ref local_path, .. } = items[0] {
-                let filename = local_path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-                format!("Uploading {}", filename)
+            if let ConflictOperation::Upload { ref local_path, ref remote_path, .. } = items[0] {
+                format!("Uploading {} to {}://{}/{}", local_path.display(), scheme, bucket, remote_path)
             } else {
                 "Uploading".to_string()
             }
@@ -2296,16 +2315,9 @@ fn delete_previous_word(s: &mut String) {
 }
 
 fn get_editing_field_mut(state: &mut ConfigModalState) -> Option<&mut String> {
+    let idx = state.selected_field_index;
     let provider = state.providers.get_mut(state.selected_provider_index)?;
-    match state.selected_field_index {
-        0 => Some(&mut provider.name),
-        2 => Some(provider.region.get_or_insert_with(String::new)),
-        3 => Some(provider.bucket_name.get_or_insert_with(String::new)),
-        4 => Some(provider.endpoint.get_or_insert_with(String::new)),
-        5 => Some(provider.access_key_id.get_or_insert_with(String::new)),
-        6 => Some(provider.secret_access_key.get_or_insert_with(String::new)),
-        _ => None,
-    }
+    provider.get_field_mut(idx)
 }
 
 fn auto_rename_local_path(path: &std::path::Path) -> std::path::PathBuf {

@@ -13,6 +13,7 @@ pub mod azure;
 pub struct Bucket {
     pub name: String,
     pub provider_index: usize,
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone)]
