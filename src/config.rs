@@ -57,6 +57,8 @@ pub struct KeymapConfig {
     pub config: String,
     #[serde(default = "default_key_add_provider")]
     pub add_provider: String,
+    #[serde(default = "default_key_toggle_preview")]
+    pub toggle_preview: String,
     // Edit Mode
     #[serde(default = "default_key_edit_next_field")]
     pub edit_next_field: String,
@@ -91,6 +93,7 @@ impl Default for KeymapConfig {
             delete: default_key_delete(),
             config: default_key_config(),
             add_provider: default_key_add_provider(),
+            toggle_preview: default_key_toggle_preview(),
             edit_next_field: default_key_edit_next_field(),
             edit_prev_field: default_key_edit_prev_field(),
             edit_confirm: default_key_edit_confirm(),
@@ -119,6 +122,7 @@ fn default_key_upload() -> String { "u".to_string() }
 fn default_key_delete() -> String { "x".to_string() }
 fn default_key_config() -> String { "c".to_string() }
 fn default_key_add_provider() -> String { "a".to_string() }
+fn default_key_toggle_preview() -> String { "p".to_string() }
 // Edit Mode
 fn default_key_edit_next_field() -> String { "Tab".to_string() }
 fn default_key_edit_prev_field() -> String { "S-Tab".to_string() }
@@ -129,13 +133,13 @@ fn default_key_edit_cycle_up() -> String { "k".to_string() }
 
 impl KeymapConfig {
     /// Total number of editable fields across all sections.
-    pub const FIELD_COUNT: usize = 22;
+    pub const FIELD_COUNT: usize = 23;
 
     /// Returns a section header to display *before* this index, if any.
     pub fn section_header(index: usize) -> Option<&'static str> {
         match index {
             0 => Some("Normal Mode"),
-            16 => Some("Edit Mode"),
+            17 => Some("Edit Mode"),
             _ => None,
         }
     }
@@ -160,13 +164,14 @@ impl KeymapConfig {
             13 => "Delete",
             14 => "Config",
             15 => "Add Provider",
+            16 => "Toggle Preview",
             // Edit Mode
-            16 => "Next Field",
-            17 => "Prev Field",
-            18 => "Confirm",
-            19 => "Cancel",
-            20 => "Cycle Down",
-            21 => "Cycle Up",
+            17 => "Next Field",
+            18 => "Prev Field",
+            19 => "Confirm",
+            20 => "Cancel",
+            21 => "Cycle Down",
+            22 => "Cycle Up",
             _ => "",
         }
     }
@@ -189,12 +194,13 @@ impl KeymapConfig {
             13 => &self.delete,
             14 => &self.config,
             15 => &self.add_provider,
-            16 => &self.edit_next_field,
-            17 => &self.edit_prev_field,
-            18 => &self.edit_confirm,
-            19 => &self.edit_cancel,
-            20 => &self.edit_cycle_down,
-            21 => &self.edit_cycle_up,
+            16 => &self.toggle_preview,
+            17 => &self.edit_next_field,
+            18 => &self.edit_prev_field,
+            19 => &self.edit_confirm,
+            20 => &self.edit_cancel,
+            21 => &self.edit_cycle_down,
+            22 => &self.edit_cycle_up,
             _ => "",
         }
     }
@@ -217,12 +223,13 @@ impl KeymapConfig {
             13 => self.delete = value,
             14 => self.config = value,
             15 => self.add_provider = value,
-            16 => self.edit_next_field = value,
-            17 => self.edit_prev_field = value,
-            18 => self.edit_confirm = value,
-            19 => self.edit_cancel = value,
-            20 => self.edit_cycle_down = value,
-            21 => self.edit_cycle_up = value,
+            16 => self.toggle_preview = value,
+            17 => self.edit_next_field = value,
+            18 => self.edit_prev_field = value,
+            19 => self.edit_confirm = value,
+            20 => self.edit_cancel = value,
+            21 => self.edit_cycle_down = value,
+            22 => self.edit_cycle_up = value,
             _ => {}
         }
     }

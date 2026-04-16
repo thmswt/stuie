@@ -225,46 +225,52 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .highlight_symbol("> ");
         
         // Preview Pane preparation
-        let preview_block = Block::default().borders(Borders::ALL).title(" Preview ")
+        let preview_title = if app.preview_enabled { " Preview " } else { " Preview (off) " };
+        let preview_block = Block::default().borders(Borders::ALL).title(preview_title)
             .border_style(Style::default().fg(theme.border_inactive));
-        let preview_inner = preview_block.inner(middle_chunks[2]);
-        let preview_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(0)].as_ref())
-            .split(preview_inner);
 
-        f.render_widget(preview_block, middle_chunks[2]);
+        if app.preview_enabled {
+            let preview_inner = preview_block.inner(middle_chunks[2]);
+            let preview_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(5), Constraint::Min(0)].as_ref())
+                .split(preview_inner);
 
-        if let Some(index) = app.main_list_state.selected() {
-            if let Some(obj) = filtered_objects.get(index) {
-                let metadata = format!(
-                    "Name: {}\nSize: {}\nType: {}\nModified: {}",
-                    obj.path.filename().unwrap_or(obj.path.as_ref()),
-                    format_size(obj.size),
-                    if obj.is_dir { "Folder" } else { "File" },
-                    obj.last_modified.format("%Y-%m-%d %H:%M:%S")
-                );
-                let metadata_para = Paragraph::new(metadata).style(Style::default().fg(theme.accent));
-                f.render_widget(metadata_para, preview_chunks[0]);
+            f.render_widget(preview_block, middle_chunks[2]);
 
-                if !obj.is_dir {
-                    if let Some(data) = &app.preview_data {
-                        let content = if is_text(data) {
-                            String::from_utf8_lossy(data).to_string()
+            if let Some(index) = app.main_list_state.selected() {
+                if let Some(obj) = filtered_objects.get(index) {
+                    let metadata = format!(
+                        "Name: {}\nSize: {}\nType: {}\nModified: {}",
+                        obj.path.filename().unwrap_or(obj.path.as_ref()),
+                        format_size(obj.size),
+                        if obj.is_dir { "Folder" } else { "File" },
+                        obj.last_modified.format("%Y-%m-%d %H:%M:%S")
+                    );
+                    let metadata_para = Paragraph::new(metadata).style(Style::default().fg(theme.accent));
+                    f.render_widget(metadata_para, preview_chunks[0]);
+
+                    if !obj.is_dir {
+                        if let Some(data) = &app.preview_data {
+                            let content = if is_text(data) {
+                                String::from_utf8_lossy(data).to_string()
+                            } else {
+                                format_hex(data)
+                            };
+                            let content_para = Paragraph::new(content)
+                                .wrap(Wrap { trim: true })
+                                .block(Block::default().borders(Borders::TOP).title(" Content Preview "));
+                            f.render_widget(content_para, preview_chunks[1]);
                         } else {
-                            format_hex(data)
-                        };
-                        let content_para = Paragraph::new(content)
-                            .wrap(Wrap { trim: true })
-                            .block(Block::default().borders(Borders::TOP).title(" Content Preview "));
-                        f.render_widget(content_para, preview_chunks[1]);
-                    } else {
-                        let loading_para = Paragraph::new("Loading preview...")
-                            .block(Block::default().borders(Borders::TOP).title(" Content Preview "));
-                        f.render_widget(loading_para, preview_chunks[1]);
+                            let loading_para = Paragraph::new("Loading preview...")
+                                .block(Block::default().borders(Borders::TOP).title(" Content Preview "));
+                            f.render_widget(loading_para, preview_chunks[1]);
+                        }
                     }
                 }
             }
+        } else {
+            f.render_widget(preview_block, middle_chunks[2]);
         }
         
         f.render_stateful_widget(main_table, middle_chunks[1], &mut app.main_list_state);
@@ -301,7 +307,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     } else if matches!(app.input_mode, InputMode::OverwriteConfirmation) {
         " Overwrite: o | Skip: s | Rename: r | Overwrite All: O | Skip All: S | Cancel: Esc "
     } else {
-        " Quit: q | Help: ? | Filter: / | Select: Space | Copy Path: y | New Folder: n | Download: d | Upload: u | Delete: x | Config: c | Switch: Tab "
+        " Quit: q | Help: ? | Filter: / | Select: Space | Copy Path: y | New Folder: n | Download: d | Upload: u | Delete: x | Preview: p | Config: c | Switch: Tab "
     };
     let status_text = if let Some(last_task) = app.active_tasks.last() {
         match last_task.task_type {
@@ -492,6 +498,7 @@ Actions:
   d         : Download selected objects
   u         : Upload file or folder to current path
   x/Delete  : Delete selected objects
+  p         : Toggle content preview
   c         : Toggle Configuration
   ?         : Toggle Help
   q / Esc   : Quit / Close Modal

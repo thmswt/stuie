@@ -192,6 +192,7 @@ pub struct App {
     pub current_bucket: Option<String>,
     pub current_path: Option<object_store::path::Path>,
     pub preview_data: Option<bytes::Bytes>,
+    pub preview_enabled: bool,
     pub search_query: String,
 
     // Task State
@@ -256,6 +257,7 @@ impl App {
             current_bucket: None,
             current_path: None,
             preview_data: None,
+            preview_enabled: true,
             search_query: String::new(),
             active_tasks: Vec::new(),
             last_finished_task: None,
@@ -753,6 +755,14 @@ impl App {
                                 }
                             }
                         }
+                    }
+                }
+                crossterm::event::KeyCode::Char('p') if !self.show_config_modal => {
+                    self.preview_enabled = !self.preview_enabled;
+                    if !self.preview_enabled {
+                        self.preview_data = None;
+                    } else {
+                        self.update_preview().await;
                     }
                 }
                 crossterm::event::KeyCode::Char('c') => {
@@ -1693,7 +1703,9 @@ impl App {
                 };
                 if !filtered.is_empty() {
                     self.main_list_state.select(Some(i));
-                    self.update_preview().await;
+                    if self.preview_enabled {
+                        self.update_preview().await;
+                    }
                 }
             }
         }
@@ -1731,7 +1743,9 @@ impl App {
                 };
                 if !filtered.is_empty() {
                     self.main_list_state.select(Some(i));
-                    self.update_preview().await;
+                    if self.preview_enabled {
+                        self.update_preview().await;
+                    }
                 }
             }
         }
