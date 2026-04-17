@@ -1017,7 +1017,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn centered_fixed(width: u16, height: u16, r: Rect) -> Rect {
+pub fn centered_fixed(width: u16, height: u16, r: Rect) -> Rect {
     let w = width.min(r.width);
     let h = height.min(r.height);
     let x = r.x + (r.width.saturating_sub(w)) / 2;
@@ -1025,7 +1025,7 @@ fn centered_fixed(width: u16, height: u16, r: Rect) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-fn format_size(size: u64) -> String {
+pub fn format_size(size: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
@@ -1041,7 +1041,7 @@ fn format_size(size: u64) -> String {
     }
 }
 
-fn is_text(data: &[u8]) -> bool {
+pub fn is_text(data: &[u8]) -> bool {
     for &b in data {
         if b == 0 {
             return false;
@@ -1053,7 +1053,7 @@ fn is_text(data: &[u8]) -> bool {
     true
 }
 
-fn format_hex(data: &[u8]) -> String {
+pub fn format_hex(data: &[u8]) -> String {
     let mut lines = Vec::new();
     for chunk in data.chunks(16) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
@@ -1105,7 +1105,7 @@ fn render_file_explorer(f: &mut Frame, app: &App, title: &str, theme: &AppTheme)
     }
 }
 
-fn shorten_path(full_path: &str, max_width: usize) -> String {
+pub fn shorten_path(full_path: &str, max_width: usize) -> String {
     if full_path.len() <= max_width {
         return full_path.to_string();
     }

@@ -2468,7 +2468,7 @@ impl App {
     }
 }
 
-fn delete_previous_word(s: &mut String) {
+pub fn delete_previous_word(s: &mut String) {
     // Skip trailing whitespace
     while s.ends_with(|c: char| c.is_whitespace()) {
         s.pop();
