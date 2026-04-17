@@ -70,17 +70,30 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(search_para, top_chunks[1]);
 
     // Middle Panes
-    let middle_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            [
-                Constraint::Percentage(20), // Sidebar
-                Constraint::Percentage(45), // Main List
-                Constraint::Percentage(35), // Preview
-            ]
-            .as_ref(),
-        )
-        .split(chunks[1]);
+    let middle_chunks = if app.preview_enabled {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Percentage(20), // Sidebar
+                    Constraint::Percentage(45), // Main List
+                    Constraint::Percentage(35), // Preview
+                ]
+                .as_ref(),
+            )
+            .split(chunks[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(
+                [
+                    Constraint::Percentage(20), // Sidebar
+                    Constraint::Percentage(80), // Main List (full width)
+                ]
+                .as_ref(),
+            )
+            .split(chunks[1])
+    };
 
     // Sidebar
     let show_icons = app.config.settings.show_icons;
@@ -224,12 +237,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .row_highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(theme.highlight_bg).fg(theme.highlight_fg))
         .highlight_symbol("> ");
         
-        // Preview Pane preparation
-        let preview_title = if app.preview_enabled { " Preview " } else { " Preview (off) " };
-        let preview_block = Block::default().borders(Borders::ALL).title(preview_title)
-            .border_style(Style::default().fg(theme.border_inactive));
-
+        // Preview Pane (only when enabled — otherwise the main list takes the space)
         if app.preview_enabled {
+            let preview_block = Block::default().borders(Borders::ALL).title(" Preview ")
+                .border_style(Style::default().fg(theme.border_inactive));
             let preview_inner = preview_block.inner(middle_chunks[2]);
             let preview_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -269,8 +280,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     }
                 }
             }
-        } else {
-            f.render_widget(preview_block, middle_chunks[2]);
         }
         
         f.render_stateful_widget(main_table, middle_chunks[1], &mut app.main_list_state);

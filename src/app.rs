@@ -286,7 +286,7 @@ impl App {
             current_bucket: None,
             current_path: None,
             preview_data: None,
-            preview_enabled: true,
+            preview_enabled: false,
             search_query: String::new(),
             active_tasks: Vec::new(),
             last_finished_task: None,
