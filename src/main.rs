@@ -70,13 +70,32 @@ fn print_quit_screen(app: &App) {
     if app.session_tasks.is_empty() {
         println!("Efficiency level Master: You did absolutely nothing this session. Zero tasks, zero worries! 🧘");
     } else {
+        let log_to_file = app.config.settings.log_to_file;
+        let total = app.session_tasks.len();
+        let console_tasks: Vec<_> = if log_to_file {
+            app.session_tasks.iter().take(5).collect()
+        } else {
+            app.session_tasks.iter().collect()
+        };
+
         println!("Tasks completed this session:");
-        for task in &app.session_tasks {
+        for task in &console_tasks {
             let status = match &task.result {
-                Ok(_) => "✅ Success",
-                Err(e) => &format!("❌ Failed: {}", e),
+                Ok(_) => "✅ Success".to_string(),
+                Err(e) => format!("❌ Failed: {}", e),
             };
             println!("  - {}: {}", task.description, status);
+        }
+
+        if log_to_file {
+            let remaining = total.saturating_sub(console_tasks.len());
+            if remaining > 0 {
+                println!("  … {} more (see log file)", remaining);
+            }
+            match write_task_log(&app.config.settings.log_file_path, &app.session_tasks) {
+                Ok(path) => println!("Full task log written to {}", path.display()),
+                Err(e) => eprintln!("Failed to write task log: {}", e),
+            }
         }
     }
     println!();
@@ -85,6 +104,45 @@ fn print_quit_screen(app: &App) {
     println!("Thank you for using stuie! We appreciate your support.");
     println!("Found a bug? Help us improve at: https://github.com/thmswt/stuie/issues");
     println!();
+}
+
+fn write_task_log(
+    path: &str,
+    tasks: &[stuie::app::FinishedTask],
+) -> Result<std::path::PathBuf> {
+    use std::io::Write;
+
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir().context("home directory not found")?.join(rest)
+    } else if path == "~" {
+        dirs::home_dir().context("home directory not found")?
+    } else {
+        std::path::PathBuf::from(path)
+    };
+
+    if let Some(parent) = expanded.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).context("Failed to create log directory")?;
+        }
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&expanded)
+        .context("Failed to open log file")?;
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    writeln!(file, "=== Session {} ===", timestamp)?;
+    for task in tasks {
+        let status = match &task.result {
+            Ok(_) => "Success".to_string(),
+            Err(e) => format!("Failed: {}", e),
+        };
+        writeln!(file, "  - {}: {}", task.description, status)?;
+    }
+    writeln!(file)?;
+    Ok(expanded)
 }
 
 async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {

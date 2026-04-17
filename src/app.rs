@@ -990,8 +990,8 @@ impl App {
                                 self.input_mode = InputMode::Editing;
                             }
                             ConfigTab::Settings => {
-                                // 'e' only for numeric fields (preview_max_bytes = index 2)
-                                if state.selected_setting_index == 2 {
+                                // 'e' for editable fields (preview_max_bytes = 2, log_file_path = 4)
+                                if state.selected_setting_index == 2 || state.selected_setting_index == 4 {
                                     self.input_mode = InputMode::Editing;
                                 }
                             }
@@ -1064,6 +1064,8 @@ impl App {
                                         0 => state.settings.show_icons = !state.settings.show_icons,
                                         1 => state.settings.confirm_delete = !state.settings.confirm_delete,
                                         2 => self.input_mode = InputMode::Editing,
+                                        3 => state.settings.log_to_file = !state.settings.log_to_file,
+                                        4 => self.input_mode = InputMode::Editing,
                                         _ => {}
                                     }
                                 }
@@ -1137,17 +1139,49 @@ impl App {
                         }
                         crossterm::event::KeyCode::Backspace => {
                             if let Some(state) = &mut self.config_modal_state {
-                                if state.selected_setting_index == 2 {
-                                    let s = &mut state.settings.preview_max_bytes;
-                                    *s /= 10;
+                                match state.selected_setting_index {
+                                    2 => {
+                                        let s = &mut state.settings.preview_max_bytes;
+                                        *s /= 10;
+                                    }
+                                    4 => {
+                                        if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                                            state.settings.log_file_path.clear();
+                                        } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                            delete_previous_word(&mut state.settings.log_file_path);
+                                        } else {
+                                            state.settings.log_file_path.pop();
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Char(c) if c.is_ascii_digit() => {
+                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                             if let Some(state) = &mut self.config_modal_state {
-                                if state.selected_setting_index == 2 {
-                                    let s = &mut state.settings.preview_max_bytes;
-                                    *s = s.saturating_mul(10).saturating_add(c.to_digit(10).unwrap_or(0) as usize);
+                                if state.selected_setting_index == 4 {
+                                    delete_previous_word(&mut state.settings.log_file_path);
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                if state.selected_setting_index == 4 {
+                                    state.settings.log_file_path.clear();
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            if let Some(state) = &mut self.config_modal_state {
+                                match state.selected_setting_index {
+                                    2 if c.is_ascii_digit() => {
+                                        let s = &mut state.settings.preview_max_bytes;
+                                        *s = s.saturating_mul(10).saturating_add(c.to_digit(10).unwrap_or(0) as usize);
+                                    }
+                                    4 => {
+                                        state.settings.log_file_path.push(c);
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

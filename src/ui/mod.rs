@@ -883,6 +883,8 @@ fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, a
             0 => if state.settings.show_icons { "true" } else { "false" }.to_string(),
             1 => if state.settings.confirm_delete { "true" } else { "false" }.to_string(),
             2 => state.settings.preview_max_bytes.to_string(),
+            3 => if state.settings.log_to_file { "true" } else { "false" }.to_string(),
+            4 => state.settings.log_file_path.clone(),
             _ => String::new(),
         };
 
@@ -893,8 +895,8 @@ fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, a
         };
 
         let hint = match i {
-            0 | 1 => " (Enter to toggle)",
-            2 => " (e to edit)",
+            0 | 1 | 3 => " (Enter to toggle)",
+            2 | 4 => " (e to edit)",
             _ => "",
         };
 

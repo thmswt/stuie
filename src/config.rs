@@ -243,6 +243,10 @@ pub struct SettingsConfig {
     pub confirm_delete: bool,
     #[serde(default = "default_preview_max_bytes")]
     pub preview_max_bytes: usize,
+    #[serde(default = "default_log_to_file")]
+    pub log_to_file: bool,
+    #[serde(default = "default_log_file_path")]
+    pub log_file_path: String,
 }
 
 impl Default for SettingsConfig {
@@ -251,12 +255,16 @@ impl Default for SettingsConfig {
             show_icons: default_show_icons(),
             confirm_delete: default_confirm_delete(),
             preview_max_bytes: default_preview_max_bytes(),
+            log_to_file: default_log_to_file(),
+            log_file_path: default_log_file_path(),
         }
     }
 }
 
 fn default_confirm_delete() -> bool { true }
 fn default_preview_max_bytes() -> usize { 1024 }
+fn default_log_to_file() -> bool { false }
+fn default_log_file_path() -> String { "~/.stuie/session.log".to_string() }
 
 impl SettingsConfig {
     pub fn field_name(index: usize) -> &'static str {
@@ -264,11 +272,13 @@ impl SettingsConfig {
             0 => "Show Icons",
             1 => "Confirm Delete",
             2 => "Preview Max Bytes",
+            3 => "Log Tasks To File",
+            4 => "Log File Path",
             _ => "",
         }
     }
 
-    pub const FIELD_COUNT: usize = 3;
+    pub const FIELD_COUNT: usize = 5;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
