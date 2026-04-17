@@ -172,9 +172,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let is_main_active = app.active_pane == Pane::Main;
         let is_normal_mode = matches!(app.input_mode, InputMode::Normal);
         
+        let main_title = if app.selected_paths.is_empty() {
+            format!(" Objects ({}) ", filtered_objects.len())
+        } else {
+            format!(" Objects ({}) — {} selected ", filtered_objects.len(), app.selected_paths.len())
+        };
         let main_block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Objects ({}) ", filtered_objects.len()))
+            .title(main_title)
             .border_style(if is_main_active && !is_normal_mode {
                 Style::default().fg(theme.border_inactive)
             } else if is_main_active {
@@ -291,7 +296,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let is_editing = matches!(app.input_mode, InputMode::Editing);
         match (active_tab, is_editing) {
             (Some(ConfigTab::Providers), true) => {
-                " Next/Prev Field: Tab/S-Tab | Finish Editing: Enter/Esc | Type to Input | Delete: Backspace | Type/HTTP: j/k "
+                " Next/Prev Field: Tab/S-Tab or \u{2191}/\u{2193} | Finish: Enter/Esc | Type to Input | Delete: Backspace | Type/HTTP: \u{2190}/\u{2192} "
             }
             (Some(ConfigTab::Providers), false) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: q "
@@ -450,8 +455,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             if matches!(app.input_mode, InputMode::Editing) {
                 (" Help (Editing Mode) ", "\
 \nField Navigation:
-  Tab       : Next field
-  S-Tab     : Previous field
+  Tab / S-Tab         : Next / Previous field
+  \u{2191} / \u{2193}             : Next / Previous field
 
 Editing:
   Type      : Input text into the selected field
@@ -462,7 +467,7 @@ Editing:
   Esc       : Cancel editing
 
 Special Fields:
-  j/k or \u{2191}/\u{2193} : Cycle options (Type / Allow HTTP)
+  \u{2190} / \u{2192} : Cycle options (Type / Allow HTTP)
 ")
             } else {
                 (" Help (Configuration) ", "\

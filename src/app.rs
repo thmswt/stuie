@@ -1161,13 +1161,13 @@ impl App {
                                 state.edit_mode = false;
                             }
                         }
-                        crossterm::event::KeyCode::Tab => {
+                        crossterm::event::KeyCode::Tab | crossterm::event::KeyCode::Down => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let count = state.providers[state.selected_provider_index].provider_type.field_count();
                                 state.selected_field_index = (state.selected_field_index + 1) % count;
                             }
                         }
-                        crossterm::event::KeyCode::BackTab => {
+                        crossterm::event::KeyCode::BackTab | crossterm::event::KeyCode::Up => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let count = state.providers[state.selected_provider_index].provider_type.field_count();
                                 if state.selected_field_index == 0 {
@@ -1177,7 +1177,7 @@ impl App {
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Down => {
+                        crossterm::event::KeyCode::Right => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let provider = &mut state.providers[state.selected_provider_index];
                                 if state.selected_field_index == 1 {
@@ -1196,7 +1196,7 @@ impl App {
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Up => {
+                        crossterm::event::KeyCode::Left => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let provider = &mut state.providers[state.selected_provider_index];
                                 if state.selected_field_index == 1 {
