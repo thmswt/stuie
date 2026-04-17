@@ -96,7 +96,18 @@ async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: 
             return Ok(());
         }
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        // Spawn any pending action as a background task so the main loop keeps redrawing
+        if app.pending_action.is_some() {
+            app.start_pending_action();
+        }
+
+        // Shorter poll timeout while loading so the spinner animates
+        let timeout = if app.loading_message.is_some() {
+            std::time::Duration::from_millis(80)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+        if event::poll(timeout)? {
             let ev = event::read()?;
             app.on_event(&ev).await;
         }

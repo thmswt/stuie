@@ -510,6 +510,30 @@ Actions:
         f.render_widget(help_para, area);
     }
 
+    if let Some(msg) = &app.loading_message {
+        let spinner_frames = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+        let frame = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() / 100)
+            .unwrap_or(0) as usize) % spinner_frames.len();
+        let spinner = spinner_frames[frame];
+
+        let width = (msg.len() as u16 + 8).clamp(30, 70);
+        let area = centered_fixed(width, 3, f.area());
+        f.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let line = Line::from(vec![
+            Span::styled(spinner, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::raw(msg.as_str()),
+        ]);
+        f.render_widget(Paragraph::new(line), inner);
+    }
+
     if let Some(error) = &app.error_message {
         let area = centered_rect(60, 40, f.area());
         f.render_widget(Clear, area);
@@ -975,6 +999,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             .as_ref(),
         )
         .split(popup_layout[1])[1]
+}
+
+fn centered_fixed(width: u16, height: u16, r: Rect) -> Rect {
+    let w = width.min(r.width);
+    let h = height.min(r.height);
+    let x = r.x + (r.width.saturating_sub(w)) / 2;
+    let y = r.y + (r.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
 }
 
 fn format_size(size: u64) -> String {

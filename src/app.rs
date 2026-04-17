@@ -164,6 +164,31 @@ pub enum AppEvent {
     TaskProgress { id: String, bytes: u64 },
     TaskFinished { id: String, result: Result<(), String> },
     RequestRefresh,
+    ConnectCompleted {
+        provider_index: usize,
+        provider_name: String,
+        result: Result<Vec<crate::storage::Bucket>, String>,
+    },
+    ObjectsLoadCompleted {
+        path: Option<ObjectPath>,
+        set_current_path: bool,
+        highlight_path: Option<ObjectPath>,
+        result: Result<Vec<Object>, String>,
+    },
+}
+
+pub enum PendingAction {
+    ExpandProvider {
+        provider_index: usize,
+        provider_name: String,
+    },
+    LoadObjects {
+        provider_index: usize,
+        bucket: String,
+        path: Option<ObjectPath>,
+        set_current_path: bool,
+        highlight_path: Option<ObjectPath>,
+    },
 }
 
 pub struct App {
@@ -214,6 +239,10 @@ pub struct App {
 
     // Conflict Resolution
     pub conflict_state: Option<ConflictResolutionState>,
+
+    // Loading State
+    pub loading_message: Option<String>,
+    pub pending_action: Option<PendingAction>,
 }
 
 impl App {
@@ -272,8 +301,10 @@ impl App {
             error_copy_area: None,
             task_copy_area: None,
             conflict_state: None,
+            loading_message: None,
+            pending_action: None,
         };
-        
+
         app.refresh_storage_providers().await;
         
         if !app.sidebar_items().is_empty() {
@@ -439,6 +470,79 @@ impl App {
                 }
                 AppEvent::RequestRefresh => {
                     self.refresh_objects().await;
+                }
+                AppEvent::ConnectCompleted { provider_index, provider_name, result } => {
+                    match result {
+                        Ok(buckets) => {
+                            self.all_buckets.retain(|b| b.provider_index != provider_index);
+                            self.all_buckets.extend(buckets);
+                            self.activated_providers.insert(provider_index);
+                            self.active_provider_index = Some(provider_index);
+                            self.expanded_providers.insert(provider_index);
+
+                            let items = self.sidebar_items();
+                            let first_bucket = items.iter().enumerate().find_map(|(idx, item)| {
+                                if let SidebarItem::Bucket { provider_index: pi, name, .. } = item {
+                                    if *pi == provider_index {
+                                        return Some((idx, name.clone()));
+                                    }
+                                }
+                                None
+                            });
+
+                            if let Some((item_idx, name)) = first_bucket {
+                                self.sidebar_state.select(Some(item_idx));
+                                self.current_bucket = Some(name.clone());
+                                self.current_path = None;
+                                self.search_query.clear();
+                                self.save_message = Some(format!("Connected to '{}'", provider_name));
+                                self.save_message_time = Some(std::time::Instant::now());
+                                // Chain: load objects for the auto-selected bucket
+                                self.loading_message = Some("Loading...".to_string());
+                                self.pending_action = Some(PendingAction::LoadObjects {
+                                    provider_index,
+                                    bucket: name,
+                                    path: None,
+                                    set_current_path: false,
+                                    highlight_path: None,
+                                });
+                            } else {
+                                self.save_message = Some(format!("Connected to '{}', but no buckets found.", provider_name));
+                                self.save_message_time = Some(std::time::Instant::now());
+                                self.loading_message = None;
+                            }
+                        }
+                        Err(e) => {
+                            self.set_error(format!("Connection to '{}' failed: {}", provider_name, e));
+                            self.loading_message = None;
+                        }
+                    }
+                }
+                AppEvent::ObjectsLoadCompleted { path, set_current_path, highlight_path, result } => {
+                    match result {
+                        Ok(objects) => {
+                            if set_current_path {
+                                self.current_path = path;
+                            }
+                            self.objects = objects;
+                            self.search_query.clear();
+
+                            let select_index = highlight_path
+                                .and_then(|hp| self.objects.iter().position(|obj| obj.path == hp))
+                                .unwrap_or(0);
+
+                            if !self.objects.is_empty() {
+                                self.main_list_state.select(Some(select_index));
+                            } else {
+                                self.main_list_state.select(None);
+                            }
+                            if self.preview_enabled {
+                                self.update_preview().await;
+                            }
+                        }
+                        Err(e) => self.set_error(format!("Failed to list objects: {}", e)),
+                    }
+                    self.loading_message = None;
                 }
             }
         }
@@ -967,12 +1071,12 @@ impl App {
                             }
                         }
                     } else {
-                        self.on_enter().await;
+                        self.on_enter();
                     }
                 }
                 crossterm::event::KeyCode::Backspace => {
                     if !self.show_config_modal {
-                        self.on_back().await;
+                        self.on_back();
                     }
                 }
                 _ => {}
@@ -1507,7 +1611,7 @@ impl App {
         self.selected_paths.clear();
     }
 
-    async fn on_enter(&mut self) {
+    fn on_enter(&mut self) {
         match self.active_pane {
             Pane::Sidebar => {
                 if let Some(index) = self.sidebar_state.selected() {
@@ -1515,109 +1619,86 @@ impl App {
                     if let Some(item) = items.get(index) {
                         match item {
                             SidebarItem::Provider(p_idx) => {
-                                if self.expanded_providers.contains(p_idx) {
-                                    self.expanded_providers.remove(p_idx);
-                                } else {
-                                    if let Some(provider) = self.storage_providers.get(*p_idx) {
-                                        let provider_name = provider.name().to_string();
-                                        match provider.list_buckets().await {
-                                            Ok(_) => {
-                                                self.refresh_storage_providers().await;
-                                                self.active_provider_index = Some(*p_idx);
-                                                self.expanded_providers.insert(*p_idx);
-                                                let items = self.sidebar_items();
-                                                if let Some((item_idx, bucket_item)) = items.iter().enumerate().find(|(_, item)| {
-                                                    matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == *p_idx)
-                                                }) {
-                                                    // Auto-select the first bucket
-                                                    if let SidebarItem::Bucket { provider_index, name, .. } = bucket_item {
-                                                        self.sidebar_state.select(Some(item_idx));
-                                                        self.current_bucket = Some(name.clone());
-                                                        self.current_path = None;
-                                                        self.search_query.clear();
-                                                        if let Some(provider) = self.storage_providers.get(*provider_index) {
-                                                            match provider.list_objects(name, None).await {
-                                                                Ok(objects) => {
-                                                                    self.objects = objects;
-                                                                    if !self.objects.is_empty() {
-                                                                        self.main_list_state.select(Some(0));
-                                                                    } else {
-                                                                        self.main_list_state.select(None);
-                                                                    }
-                                                                    self.update_preview().await;
-                                                                }
-                                                                Err(e) => self.set_error(format!("Failed to list objects in {}: {}", name, e)),
-                                                            }
-                                                        }
-                                                    }
-                                                    if !self.activated_providers.contains(p_idx) {
-                                                        self.save_message = Some(format!("Connected to '{}'", provider_name));
-                                                        self.save_message_time = Some(std::time::Instant::now());
-                                                    }
-                                                } else {
-                                                    if !self.activated_providers.contains(p_idx) {
-                                                        self.save_message = Some(format!("Connected to '{}', but no buckets found.", provider_name));
-                                                        self.save_message_time = Some(std::time::Instant::now());
-                                                    }
-                                                }
-                                                self.activated_providers.insert(*p_idx);
-                                            }
-                                            Err(e) => self.set_error(format!("Connection to '{}' failed: {}", provider_name, e)),
+                                let p_idx = *p_idx;
+                                if self.expanded_providers.contains(&p_idx) {
+                                    self.expanded_providers.remove(&p_idx);
+                                } else if self.activated_providers.contains(&p_idx) {
+                                    // Already connected — expand using cached buckets
+                                    self.active_provider_index = Some(p_idx);
+                                    self.expanded_providers.insert(p_idx);
+                                    let items = self.sidebar_items();
+                                    if let Some((item_idx, bucket_item)) = items.iter().enumerate().find(|(_, item)| {
+                                        matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == p_idx)
+                                    }) {
+                                        if let SidebarItem::Bucket { provider_index, name, .. } = bucket_item {
+                                            self.sidebar_state.select(Some(item_idx));
+                                            self.current_bucket = Some(name.clone());
+                                            self.current_path = None;
+                                            self.search_query.clear();
+                                            self.loading_message = Some("Loading...".to_string());
+                                            self.pending_action = Some(PendingAction::LoadObjects {
+                                                provider_index: *provider_index,
+                                                bucket: name.clone(),
+                                                path: None,
+                                                set_current_path: false,
+                                                highlight_path: None,
+                                            });
                                         }
                                     }
+                                } else {
+                                    // First connection — schedule via pending action
+                                    let provider_name = self.storage_providers
+                                        .get(p_idx)
+                                        .map(|p| p.name().to_string())
+                                        .unwrap_or_default();
+                                    self.loading_message = Some(format!("Connecting to '{}'...", provider_name));
+                                    self.pending_action = Some(PendingAction::ExpandProvider {
+                                        provider_index: p_idx,
+                                        provider_name,
+                                    });
                                 }
                             }
                             SidebarItem::Bucket { provider_index, name, .. } => {
-                                if let Some(provider) = self.storage_providers.get(*provider_index) {
-                                    self.active_provider_index = Some(*provider_index);
-                                    self.current_bucket = Some(name.clone());
-                                    self.current_path = None;
-                                    self.search_query.clear();
-                                    match provider.list_objects(name, None).await {
-                                        Ok(objects) => {
-                                            self.objects = objects;
-                                            if !self.objects.is_empty() {
-                                                self.main_list_state.select(Some(0));
-                                            } else {
-                                                self.main_list_state.select(None);
-                                            }
-                                            self.update_preview().await;
-                                        }
-                                        Err(e) => self.set_error(format!("Failed to list objects in {}: {}", name, e)),
-                                    }
-                                }
+                                let provider_index = *provider_index;
+                                let name = name.clone();
+                                self.active_provider_index = Some(provider_index);
+                                self.current_bucket = Some(name.clone());
+                                self.current_path = None;
+                                self.search_query.clear();
+                                self.loading_message = Some("Loading...".to_string());
+                                self.pending_action = Some(PendingAction::LoadObjects {
+                                    provider_index,
+                                    bucket: name,
+                                    path: None,
+                                    set_current_path: false,
+                                    highlight_path: None,
+                                });
                             }
                         }
                     }
                 }
             }
             Pane::Main => {
-                // Handle entering folders
                 if let Some(index) = self.main_list_state.selected() {
-                    let filtered = self.filtered_objects();
-                    if let Some(obj) = filtered.get(index).cloned() {
-                        if obj.is_dir {
-                            if let Some(bucket_name) = &self.current_bucket {
-                                if let Some(sidebar_index) = self.sidebar_state.selected() {
-                                    let items = self.sidebar_items();
-                                    if let Some(SidebarItem::Bucket { provider_index, .. }) = items.get(sidebar_index) {
-                                        if let Some(provider) = self.storage_providers.get(*provider_index) {
-                                            match provider.list_objects(bucket_name, Some(&obj.path)).await {
-                                                Ok(objects) => {
-                                                    self.current_path = Some(obj.path.clone());
-                                                    self.objects = objects;
-                                                    self.search_query.clear();
-                                                    if !self.objects.is_empty() {
-                                                        self.main_list_state.select(Some(0));
-                                                    } else {
-                                                        self.main_list_state.select(None);
-                                                    }
-                                                    self.update_preview().await;
-                                                }
-                                                Err(e) => self.set_error(format!("Failed to list objects in {}: {}", obj.path, e)),
-                                            }
-                                        }
-                                    }
+                    let obj_info: Option<(ObjectPath, bool)> = {
+                        let filtered = self.filtered_objects();
+                        filtered.get(index).map(|o| (o.path.clone(), o.is_dir))
+                    };
+                    if let Some((obj_path, is_dir)) = obj_info {
+                        if is_dir {
+                            if let (Some(bucket_name), Some(sidebar_index)) =
+                                (self.current_bucket.clone(), self.sidebar_state.selected())
+                            {
+                                let items = self.sidebar_items();
+                                if let Some(SidebarItem::Bucket { provider_index, .. }) = items.get(sidebar_index) {
+                                    self.loading_message = Some("Loading...".to_string());
+                                    self.pending_action = Some(PendingAction::LoadObjects {
+                                        provider_index: *provider_index,
+                                        bucket: bucket_name,
+                                        path: Some(obj_path),
+                                        set_current_path: true,
+                                        highlight_path: None,
+                                    });
                                 }
                             }
                         }
@@ -1627,7 +1708,7 @@ impl App {
         }
     }
 
-    async fn on_back(&mut self) {
+    fn on_back(&mut self) {
         if let Some(bucket_name) = &self.current_bucket {
             if let Some(path) = &self.current_path {
                 let to_highlight = path.clone();
@@ -1635,31 +1716,67 @@ impl App {
                 if let Some(sidebar_index) = self.sidebar_state.selected() {
                     let items = self.sidebar_items();
                     if let Some(SidebarItem::Bucket { provider_index, .. }) = items.get(sidebar_index) {
-                        if let Some(provider) = self.storage_providers.get(*provider_index) {
-                            match provider.list_objects(bucket_name, parent.as_ref()).await {
-                                Ok(objects) => {
-                                    self.current_path = parent.map(|p| p.to_owned());
-                                    self.objects = objects;
-                                    self.search_query.clear();
-                                    
-                                    // Try to find the previous folder in the new list
-                                    let mut new_index = 0;
-                                    if let Some(idx) = self.objects.iter().position(|obj| obj.path == to_highlight) {
-                                        new_index = idx;
-                                    }
-
-                                    if !self.objects.is_empty() {
-                                        self.main_list_state.select(Some(new_index));
-                                    } else {
-                                        self.main_list_state.select(None);
-                                    }
-                                    self.update_preview().await;
-                                }
-                                Err(e) => self.set_error(format!("Failed to list objects: {}", e)),
-                            }
-                        }
+                        self.loading_message = Some("Loading...".to_string());
+                        self.pending_action = Some(PendingAction::LoadObjects {
+                            provider_index: *provider_index,
+                            bucket: bucket_name.clone(),
+                            path: parent.map(|p| p.to_owned()),
+                            set_current_path: true,
+                            highlight_path: Some(to_highlight),
+                        });
                     }
                 }
+            }
+        }
+    }
+
+    pub fn start_pending_action(&mut self) {
+        let action = match self.pending_action.take() {
+            Some(a) => a,
+            None => return,
+        };
+
+        match action {
+            PendingAction::ExpandProvider { provider_index, provider_name } => {
+                let provider = match self.storage_providers.get(provider_index) {
+                    Some(p) => p.clone_box(),
+                    None => {
+                        self.loading_message = None;
+                        return;
+                    }
+                };
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    let result = provider.list_buckets().await.map_err(|e| e.to_string());
+                    let _ = tx.send(AppEvent::ConnectCompleted {
+                        provider_index,
+                        provider_name,
+                        result,
+                    });
+                });
+            }
+            PendingAction::LoadObjects { provider_index, bucket, path, set_current_path, highlight_path } => {
+                let provider = match self.storage_providers.get(provider_index) {
+                    Some(p) => p.clone_box(),
+                    None => {
+                        self.loading_message = None;
+                        return;
+                    }
+                };
+                let tx = self.event_tx.clone();
+                let path_for_call = path.clone();
+                tokio::spawn(async move {
+                    let result = provider
+                        .list_objects(&bucket, path_for_call.as_ref())
+                        .await
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(AppEvent::ObjectsLoadCompleted {
+                        path,
+                        set_current_path,
+                        highlight_path,
+                        result,
+                    });
+                });
             }
         }
     }
