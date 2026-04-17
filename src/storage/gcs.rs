@@ -1,11 +1,11 @@
-use anyhow::{bail, Context, Result};
+use crate::config::{ProviderConfig, ProviderType};
+use crate::storage::{Bucket, Object, ProgressCallback, StorageBackend};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use futures::StreamExt;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
-use crate::config::{ProviderConfig, ProviderType};
-use crate::storage::{Bucket, Object, ProgressCallback, StorageBackend};
-use futures::StreamExt;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
@@ -111,8 +111,8 @@ impl GcsStorage {
             .cloned()
             .or_else(|| std::env::var("GOOGLE_APPLICATION_CREDENTIALS").ok())
             .or_else(|| {
-                let default = dirs::home_dir()?
-                    .join(".config/gcloud/application_default_credentials.json");
+                let default =
+                    dirs::home_dir()?.join(".config/gcloud/application_default_credentials.json");
                 if default.exists() {
                     Some(default.to_string_lossy().to_string())
                 } else {
@@ -373,8 +373,7 @@ impl StorageBackend for GcsStorage {
             bail!("GCS bucket listing failed ({}): {}", status, body);
         }
 
-        let list: BucketListResponse =
-            resp.json().await.context("Failed to parse bucket list")?;
+        let list: BucketListResponse = resp.json().await.context("Failed to parse bucket list")?;
 
         let buckets = list
             .items

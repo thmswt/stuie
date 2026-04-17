@@ -2,12 +2,12 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::fs;
 use stuie::app::App;
 use stuie::ui::ui;
-use std::fs;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,7 +16,10 @@ async fn main() -> Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
         .init();
 
     tracing::info!("Starting stuie...");
@@ -24,7 +27,8 @@ async fn main() -> Result<()> {
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("Failed to enter alternate screen and enable mouse capture")?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .context("Failed to enter alternate screen and enable mouse capture")?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 
@@ -38,7 +42,8 @@ async fn main() -> Result<()> {
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    ).context("Failed to leave alternate screen and disable mouse capture")?;
+    )
+    .context("Failed to leave alternate screen and disable mouse capture")?;
     terminal.show_cursor().context("Failed to show cursor")?;
 
     if let Err(err) = res {
@@ -68,7 +73,9 @@ fn print_quit_screen(app: &App) {
 
     // Print Session Tasks
     if app.session_tasks.is_empty() {
-        println!("Efficiency level Master: You did absolutely nothing this session. Zero tasks, zero worries! 🧘");
+        println!(
+            "Efficiency level Master: You did absolutely nothing this session. Zero tasks, zero worries! 🧘"
+        );
     } else {
         let log_to_file = app.config.settings.log_to_file;
         let total = app.session_tasks.len();
@@ -106,14 +113,13 @@ fn print_quit_screen(app: &App) {
     println!();
 }
 
-fn write_task_log(
-    path: &str,
-    tasks: &[stuie::app::FinishedTask],
-) -> Result<std::path::PathBuf> {
+fn write_task_log(path: &str, tasks: &[stuie::app::FinishedTask]) -> Result<std::path::PathBuf> {
     use std::io::Write;
 
     let expanded = if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir().context("home directory not found")?.join(rest)
+        dirs::home_dir()
+            .context("home directory not found")?
+            .join(rest)
     } else if path == "~" {
         dirs::home_dir().context("home directory not found")?
     } else {
@@ -145,11 +151,16 @@ fn write_task_log(
     Ok(expanded)
 }
 
-async fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+async fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> Result<()> {
     loop {
         app.update_tasks().await;
 
-        terminal.draw(|f| ui(f, app)).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        terminal
+            .draw(|f| ui(f, app))
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         if app.should_quit {
             return Ok(());
         }

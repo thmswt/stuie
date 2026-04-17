@@ -1,15 +1,15 @@
-use crate::config::{Config, ProviderConfig, ProviderType, KeymapConfig, SettingsConfig};
-use crate::storage::{Bucket, Object, StorageBackend, ProgressCallback};
-use object_store::path::Path as ObjectPath;
-use crate::storage::s3::S3Storage;
+use crate::config::{Config, KeymapConfig, ProviderConfig, ProviderType, SettingsConfig};
 use crate::storage::gcs::GcsStorage;
-use ratatui::widgets::{ListState, TableState};
+use crate::storage::s3::S3Storage;
+use crate::storage::{Bucket, Object, ProgressCallback, StorageBackend};
+use anyhow::Result;
+use object_store::path::Path as ObjectPath;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{ListState, TableState};
+use ratatui_explorer::{FileExplorer, FileExplorerBuilder, Theme};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use ratatui_explorer::{FileExplorer, FileExplorerBuilder, Theme};
-use anyhow::{Result};
 
 pub enum InputMode {
     Normal,
@@ -37,7 +37,12 @@ pub enum ConfigTab {
 }
 
 impl ConfigTab {
-    pub const ALL: [ConfigTab; 4] = [ConfigTab::Providers, ConfigTab::Keymap, ConfigTab::Settings, ConfigTab::Theme];
+    pub const ALL: [ConfigTab; 4] = [
+        ConfigTab::Providers,
+        ConfigTab::Keymap,
+        ConfigTab::Settings,
+        ConfigTab::Theme,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -90,7 +95,11 @@ pub struct ConfigModalState {
 #[derive(Clone)]
 pub enum SidebarItem {
     Provider(usize),
-    Bucket { provider_index: usize, name: String, location: Option<String> },
+    Bucket {
+        provider_index: usize,
+        name: String,
+        location: Option<String>,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -161,8 +170,14 @@ pub struct ConflictResolutionState {
 }
 
 pub enum AppEvent {
-    TaskProgress { id: String, bytes: u64 },
-    TaskFinished { id: String, result: Result<(), String> },
+    TaskProgress {
+        id: String,
+        bytes: u64,
+    },
+    TaskFinished {
+        id: String,
+        result: Result<(), String>,
+    },
     RequestRefresh,
     ConnectCompleted {
         provider_index: usize,
@@ -253,8 +268,16 @@ impl App {
         let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let theme = Theme::default()
             .with_highlight_symbol("> ")
-            .with_highlight_item_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-            .with_highlight_dir_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+            .with_highlight_item_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .with_highlight_dir_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
 
         let file_explorer = FileExplorerBuilder::default()
             .working_dir(home_dir)
@@ -306,11 +329,11 @@ impl App {
         };
 
         app.refresh_storage_providers().await;
-        
+
         if !app.sidebar_items().is_empty() {
             app.sidebar_state.select(Some(0));
         }
-        
+
         app
     }
 
@@ -318,11 +341,16 @@ impl App {
         if self.search_query.is_empty() {
             return self.objects.iter().collect();
         }
-        
+
         let query = self.search_query.to_lowercase();
-        self.objects.iter()
+        self.objects
+            .iter()
             .filter(|obj| {
-                let filename = obj.path.filename().unwrap_or_else(|| obj.path.as_ref()).to_lowercase();
+                let filename = obj
+                    .path
+                    .filename()
+                    .unwrap_or_else(|| obj.path.as_ref())
+                    .to_lowercase();
                 filename.contains(&query)
             })
             .collect()
@@ -355,25 +383,33 @@ impl App {
                 continue;
             }
             match provider_config.provider_type {
-                ProviderType::S3 => {
-                    match S3Storage::new(provider_config.clone(), i).await {
-                        Ok(storage) => storage_providers.push(Box::new(storage)),
-                        Err(e) => tracing::error!("Failed to initialize S3 provider {}: {}", provider_config.name, e),
-                    }
-                }
-                ProviderType::GCS => {
-                    match GcsStorage::new(provider_config.clone(), i).await {
-                        Ok(storage) => {
-                            if provider_config.project.as_ref().map_or(true, |p| p.trim().is_empty()) {
-                                if let Some(project) = storage.detected_project_id() {
-                                    project_backfills.push((i, project.to_string()));
-                                }
+                ProviderType::S3 => match S3Storage::new(provider_config.clone(), i).await {
+                    Ok(storage) => storage_providers.push(Box::new(storage)),
+                    Err(e) => tracing::error!(
+                        "Failed to initialize S3 provider {}: {}",
+                        provider_config.name,
+                        e
+                    ),
+                },
+                ProviderType::GCS => match GcsStorage::new(provider_config.clone(), i).await {
+                    Ok(storage) => {
+                        if provider_config
+                            .project
+                            .as_ref()
+                            .map_or(true, |p| p.trim().is_empty())
+                        {
+                            if let Some(project) = storage.detected_project_id() {
+                                project_backfills.push((i, project.to_string()));
                             }
-                            storage_providers.push(Box::new(storage));
                         }
-                        Err(e) => tracing::error!("Failed to initialize GCS provider {}: {}", provider_config.name, e),
+                        storage_providers.push(Box::new(storage));
                     }
-                }
+                    Err(e) => tracing::error!(
+                        "Failed to initialize GCS provider {}: {}",
+                        provider_config.name,
+                        e
+                    ),
+                },
                 _ => {}
             }
         }
@@ -387,7 +423,11 @@ impl App {
         for provider in &self.storage_providers {
             match provider.list_buckets().await {
                 Ok(mut buckets) => all_buckets.append(&mut buckets),
-                Err(e) => tracing::error!("Failed to list buckets for provider {}: {}", provider.name(), e),
+                Err(e) => tracing::error!(
+                    "Failed to list buckets for provider {}: {}",
+                    provider.name(),
+                    e
+                ),
             }
         }
         self.all_buckets = all_buckets;
@@ -455,11 +495,13 @@ impl App {
                         };
                         self.last_finished_task = Some(finished.clone());
                         self.session_tasks.push(finished);
-                        
+
                         // Auto-refresh for certain operations
-                        if (task.task_type == TaskType::Upload || 
-                            task.task_type == TaskType::CreateFolder || 
-                            task.task_type == TaskType::Delete) && result.is_ok() {
+                        if (task.task_type == TaskType::Upload
+                            || task.task_type == TaskType::CreateFolder
+                            || task.task_type == TaskType::Delete)
+                            && result.is_ok()
+                        {
                             let _ = self.event_tx.send(AppEvent::RequestRefresh);
                         }
                     }
@@ -471,10 +513,15 @@ impl App {
                 AppEvent::RequestRefresh => {
                     self.refresh_objects().await;
                 }
-                AppEvent::ConnectCompleted { provider_index, provider_name, result } => {
+                AppEvent::ConnectCompleted {
+                    provider_index,
+                    provider_name,
+                    result,
+                } => {
                     match result {
                         Ok(buckets) => {
-                            self.all_buckets.retain(|b| b.provider_index != provider_index);
+                            self.all_buckets
+                                .retain(|b| b.provider_index != provider_index);
                             self.all_buckets.extend(buckets);
                             self.activated_providers.insert(provider_index);
                             self.active_provider_index = Some(provider_index);
@@ -482,7 +529,12 @@ impl App {
 
                             let items = self.sidebar_items();
                             let first_bucket = items.iter().enumerate().find_map(|(idx, item)| {
-                                if let SidebarItem::Bucket { provider_index: pi, name, .. } = item {
+                                if let SidebarItem::Bucket {
+                                    provider_index: pi,
+                                    name,
+                                    ..
+                                } = item
+                                {
                                     if *pi == provider_index {
                                         return Some((idx, name.clone()));
                                     }
@@ -495,7 +547,8 @@ impl App {
                                 self.current_bucket = Some(name.clone());
                                 self.current_path = None;
                                 self.search_query.clear();
-                                self.save_message = Some(format!("Connected to '{}'", provider_name));
+                                self.save_message =
+                                    Some(format!("Connected to '{}'", provider_name));
                                 self.save_message_time = Some(std::time::Instant::now());
                                 // Chain: load objects for the auto-selected bucket
                                 self.loading_message = Some("Loading...".to_string());
@@ -507,18 +560,29 @@ impl App {
                                     highlight_path: None,
                                 });
                             } else {
-                                self.save_message = Some(format!("Connected to '{}', but no buckets found.", provider_name));
+                                self.save_message = Some(format!(
+                                    "Connected to '{}', but no buckets found.",
+                                    provider_name
+                                ));
                                 self.save_message_time = Some(std::time::Instant::now());
                                 self.loading_message = None;
                             }
                         }
                         Err(e) => {
-                            self.set_error(format!("Connection to '{}' failed: {}", provider_name, e));
+                            self.set_error(format!(
+                                "Connection to '{}' failed: {}",
+                                provider_name, e
+                            ));
                             self.loading_message = None;
                         }
                     }
                 }
-                AppEvent::ObjectsLoadCompleted { path, set_current_path, highlight_path, result } => {
+                AppEvent::ObjectsLoadCompleted {
+                    path,
+                    set_current_path,
+                    highlight_path,
+                    result,
+                } => {
                     match result {
                         Ok(objects) => {
                             if set_current_path {
@@ -560,7 +624,10 @@ impl App {
         };
 
         if let Some(provider) = self.storage_providers.get(provider_idx) {
-            match provider.list_objects(&bucket, self.current_path.as_ref()).await {
+            match provider
+                .list_objects(&bucket, self.current_path.as_ref())
+                .await
+            {
                 Ok(objects) => {
                     self.objects = objects;
                     if !self.objects.is_empty() {
@@ -583,23 +650,34 @@ impl App {
                 self.handle_key(key.code, key.modifiers, event).await;
             }
             crossterm::event::Event::Mouse(mouse) => {
-                if mouse.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+                if mouse.kind
+                    == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                {
                     if let Some(area) = self.copy_button_area {
-                        if mouse.column >= area.x && mouse.column < area.x + area.width &&
-                           mouse.row >= area.y && mouse.row < area.y + area.height {
+                        if mouse.column >= area.x
+                            && mouse.column < area.x + area.width
+                            && mouse.row >= area.y
+                            && mouse.row < area.y + area.height
+                        {
                             self.copy_path_to_clipboard();
                         }
                     }
                     if let Some(area) = self.error_copy_area {
-                        if self.error_message.is_some() &&
-                           mouse.column >= area.x && mouse.column < area.x + area.width &&
-                           mouse.row >= area.y && mouse.row < area.y + area.height {
+                        if self.error_message.is_some()
+                            && mouse.column >= area.x
+                            && mouse.column < area.x + area.width
+                            && mouse.row >= area.y
+                            && mouse.row < area.y + area.height
+                        {
                             self.copy_error_to_clipboard();
                         }
                     }
                     if let Some(area) = self.task_copy_area {
-                        if mouse.column >= area.x && mouse.column < area.x + area.width &&
-                           mouse.row >= area.y && mouse.row < area.y + area.height {
+                        if mouse.column >= area.x
+                            && mouse.column < area.x + area.width
+                            && mouse.row >= area.y
+                            && mouse.row < area.y + area.height
+                        {
                             self.copy_task_to_clipboard();
                         }
                     }
@@ -644,19 +722,31 @@ impl App {
 
     fn copy_task_to_clipboard(&mut self) {
         let status_text = if let Some(last_task) = self.active_tasks.last() {
-            format!("[{}] {}", match last_task.task_type {
-                TaskType::Upload => "Upload",
-                TaskType::Download => "Download",
-                TaskType::CreateFolder => "New Folder",
-                TaskType::Delete => "Delete",
-            }, last_task.description)
+            format!(
+                "[{}] {}",
+                match last_task.task_type {
+                    TaskType::Upload => "Upload",
+                    TaskType::Download => "Download",
+                    TaskType::CreateFolder => "New Folder",
+                    TaskType::Delete => "Delete",
+                },
+                last_task.description
+            )
         } else if let Some(finished) = &self.last_finished_task {
-            format!("[{}] {}: {}", match finished.task_type {
-                TaskType::Upload => "Upload",
-                TaskType::Download => "Download",
-                TaskType::CreateFolder => "New Folder",
-                TaskType::Delete => "Delete",
-            }, finished.description, match &finished.result { Ok(_) => "Done", Err(e) => e })
+            format!(
+                "[{}] {}: {}",
+                match finished.task_type {
+                    TaskType::Upload => "Upload",
+                    TaskType::Download => "Download",
+                    TaskType::CreateFolder => "New Folder",
+                    TaskType::Delete => "Delete",
+                },
+                finished.description,
+                match &finished.result {
+                    Ok(_) => "Done",
+                    Err(e) => e,
+                }
+            )
         } else {
             "Ready".to_string()
         };
@@ -681,8 +771,12 @@ impl App {
                     if let Some(config) = self.config.providers.get(idx) {
                         if let Some(endpoint) = &config.endpoint {
                             let bucket = self.current_bucket.as_deref().unwrap_or("");
-                            let path = self.current_path.as_ref().map(|p| p.to_string()).unwrap_or_default();
-                            
+                            let path = self
+                                .current_path
+                                .as_ref()
+                                .map(|p| p.to_string())
+                                .unwrap_or_default();
+
                             let mut base = endpoint.clone();
                             if !base.ends_with('/') {
                                 base.push('/');
@@ -729,40 +823,52 @@ impl App {
         };
 
         let bucket = self.current_bucket.as_deref().unwrap_or("");
-        let path = self.current_path.as_ref().map(|p| p.to_string()).unwrap_or_default();
-        
+        let path = self
+            .current_path
+            .as_ref()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+
         if bucket.is_empty() {
             return format!("{}://", protocol);
         }
-        
+
         if path.is_empty() {
             return format!("{}://{}", protocol, bucket);
         }
-        
+
         format!("{}://{}/{}", protocol, bucket, path)
     }
 
-    async fn handle_key(&mut self, key_code: crossterm::event::KeyCode, key_modifiers: crossterm::event::KeyModifiers, event: &crossterm::event::Event) {
+    async fn handle_key(
+        &mut self,
+        key_code: crossterm::event::KeyCode,
+        key_modifiers: crossterm::event::KeyModifiers,
+        event: &crossterm::event::Event,
+    ) {
         if self.pending_delete_index.is_some() {
             match key_code {
                 crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
                     if let Some(index) = self.pending_delete_index {
                         if let Some(state) = &mut self.config_modal_state {
-                             state.providers.remove(index);
-                             self.config.providers = state.providers.clone();
-                             if let Err(e) = self.config.save() {
-                                 self.set_error(format!("Failed to save config: {}", e));
-                             } else {
-                                 self.refresh_storage_providers().await;
-                                 self.save_message = Some("Provider deleted successfully.".to_string());
-                                 self.save_message_time = Some(std::time::Instant::now());
-                             }
+                            state.providers.remove(index);
+                            self.config.providers = state.providers.clone();
+                            if let Err(e) = self.config.save() {
+                                self.set_error(format!("Failed to save config: {}", e));
+                            } else {
+                                self.refresh_storage_providers().await;
+                                self.save_message =
+                                    Some("Provider deleted successfully.".to_string());
+                                self.save_message_time = Some(std::time::Instant::now());
+                            }
                         }
                     }
                     self.pending_delete_index = None;
                     return;
                 }
-                crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Char('N') | crossterm::event::KeyCode::Esc => {
+                crossterm::event::KeyCode::Char('n')
+                | crossterm::event::KeyCode::Char('N')
+                | crossterm::event::KeyCode::Esc => {
                     self.pending_delete_index = None;
                     return;
                 }
@@ -771,8 +877,10 @@ impl App {
         }
 
         if self.error_message.is_some() || self.save_message.is_some() {
-             match key_code {
-                crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Enter => {
+            match key_code {
+                crossterm::event::KeyCode::Char('q')
+                | crossterm::event::KeyCode::Esc
+                | crossterm::event::KeyCode::Enter => {
                     self.error_message = None;
                     self.save_message = None;
                     self.save_message_time = None;
@@ -825,10 +933,14 @@ impl App {
                     }
                 }
                 crossterm::event::KeyCode::Char('d') => {
-                    if self.active_pane == Pane::Main && (!self.selected_paths.is_empty() || self.main_list_state.selected().is_some()) {
+                    if self.active_pane == Pane::Main
+                        && (!self.selected_paths.is_empty()
+                            || self.main_list_state.selected().is_some())
+                    {
                         self.input_mode = InputMode::DownloadPrompt;
                         self.prompt_input = String::new();
-                        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                        let home_dir =
+                            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
                         let _ = self.file_explorer.set_cwd(home_dir);
                     }
                 }
@@ -837,12 +949,16 @@ impl App {
                         self.input_mode = InputMode::UploadPrompt;
                         self.prompt_input = String::new();
                         // Reset file explorer to home directory
-                        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                        let home_dir =
+                            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
                         let _ = self.file_explorer.set_cwd(home_dir);
                     }
                 }
                 crossterm::event::KeyCode::Char('x') | crossterm::event::KeyCode::Delete => {
-                    if self.active_pane == Pane::Main && (!self.selected_paths.is_empty() || self.main_list_state.selected().is_some()) {
+                    if self.active_pane == Pane::Main
+                        && (!self.selected_paths.is_empty()
+                            || self.main_list_state.selected().is_some())
+                    {
                         self.input_mode = InputMode::DeleteConfirmation;
                     }
                 }
@@ -887,8 +1003,18 @@ impl App {
                             selected_theme_index: crate::theme::theme_index(&self.config.theme),
                             original_theme: self.config.theme.clone(),
                         });
-                        if self.config_modal_state.as_ref().unwrap().providers.is_empty() {
-                            self.config_modal_state.as_mut().unwrap().providers.push(ProviderConfig::default());
+                        if self
+                            .config_modal_state
+                            .as_ref()
+                            .unwrap()
+                            .providers
+                            .is_empty()
+                        {
+                            self.config_modal_state
+                                .as_mut()
+                                .unwrap()
+                                .providers
+                                .push(ProviderConfig::default());
                         }
                     } else {
                         // Revert theme if not saved
@@ -901,7 +1027,7 @@ impl App {
                 crossterm::event::KeyCode::Char('D') if self.show_config_modal => {
                     if let Some(state) = &self.config_modal_state {
                         if state.active_tab == ConfigTab::Providers && !state.providers.is_empty() {
-                             self.pending_delete_index = Some(state.selected_provider_index);
+                            self.pending_delete_index = Some(state.selected_provider_index);
                         }
                     }
                 }
@@ -910,24 +1036,35 @@ impl App {
                         if let Some(state) = &mut self.config_modal_state {
                             match state.active_tab {
                                 ConfigTab::Providers => {
-                                    if state.selected_provider_index < state.providers.len().saturating_sub(1) {
+                                    if state.selected_provider_index
+                                        < state.providers.len().saturating_sub(1)
+                                    {
                                         state.selected_provider_index += 1;
                                     }
                                 }
                                 ConfigTab::Keymap => {
-                                    if state.selected_keymap_index < KeymapConfig::FIELD_COUNT.saturating_sub(1) {
+                                    if state.selected_keymap_index
+                                        < KeymapConfig::FIELD_COUNT.saturating_sub(1)
+                                    {
                                         state.selected_keymap_index += 1;
                                     }
                                 }
                                 ConfigTab::Settings => {
-                                    if state.selected_setting_index < SettingsConfig::FIELD_COUNT.saturating_sub(1) {
+                                    if state.selected_setting_index
+                                        < SettingsConfig::FIELD_COUNT.saturating_sub(1)
+                                    {
                                         state.selected_setting_index += 1;
                                     }
                                 }
                                 ConfigTab::Theme => {
-                                    if state.selected_theme_index < crate::theme::BUILTIN_THEMES.len().saturating_sub(1) {
+                                    if state.selected_theme_index
+                                        < crate::theme::BUILTIN_THEMES.len().saturating_sub(1)
+                                    {
                                         state.selected_theme_index += 1;
-                                        self.config.theme = crate::theme::BUILTIN_THEMES[state.selected_theme_index].name.to_string();
+                                        self.config.theme = crate::theme::BUILTIN_THEMES
+                                            [state.selected_theme_index]
+                                            .name
+                                            .to_string();
                                     }
                                 }
                             }
@@ -958,7 +1095,10 @@ impl App {
                                 ConfigTab::Theme => {
                                     if state.selected_theme_index > 0 {
                                         state.selected_theme_index -= 1;
-                                        self.config.theme = crate::theme::BUILTIN_THEMES[state.selected_theme_index].name.to_string();
+                                        self.config.theme = crate::theme::BUILTIN_THEMES
+                                            [state.selected_theme_index]
+                                            .name
+                                            .to_string();
                                     }
                                 }
                             }
@@ -986,12 +1126,17 @@ impl App {
                             }
                             ConfigTab::Keymap => {
                                 state.keymap_editing = true;
-                                state.keymap_input = state.keymap.get_field(state.selected_keymap_index).to_string();
+                                state.keymap_input = state
+                                    .keymap
+                                    .get_field(state.selected_keymap_index)
+                                    .to_string();
                                 self.input_mode = InputMode::Editing;
                             }
                             ConfigTab::Settings => {
                                 // 'e' for editable fields (preview_max_bytes = 2, log_file_path = 4)
-                                if state.selected_setting_index == 2 || state.selected_setting_index == 4 {
+                                if state.selected_setting_index == 2
+                                    || state.selected_setting_index == 4
+                                {
                                     self.input_mode = InputMode::Editing;
                                 }
                             }
@@ -1007,7 +1152,8 @@ impl App {
                         match self.config.save() {
                             Ok(_) => {
                                 // Check if the active provider was disabled
-                                let active_disabled = self.active_provider_index
+                                let active_disabled = self
+                                    .active_provider_index
                                     .and_then(|idx| self.config.providers.get(idx))
                                     .is_some_and(|p| !p.enabled);
                                 self.refresh_storage_providers().await;
@@ -1024,8 +1170,15 @@ impl App {
                                 if let Some(ms) = &mut self.config_modal_state {
                                     ms.original_theme = self.config.theme.clone();
                                 }
-                                let config_path = dirs::home_dir().unwrap().join(".config").join("stuie").join("config.json");
-                                self.save_message = Some(format!("Configuration saved to {}!", config_path.display()));
+                                let config_path = dirs::home_dir()
+                                    .unwrap()
+                                    .join(".config")
+                                    .join("stuie")
+                                    .join("config.json");
+                                self.save_message = Some(format!(
+                                    "Configuration saved to {}!",
+                                    config_path.display()
+                                ));
                                 self.save_message_time = Some(std::time::Instant::now());
                             }
                             Err(e) => self.set_error(format!("Failed to save config: {}", e)),
@@ -1050,25 +1203,31 @@ impl App {
                         if let Some(state) = &mut self.config_modal_state {
                             match state.active_tab {
                                 ConfigTab::Providers => {
-                                    if let Some(provider) = state.providers.get_mut(state.selected_provider_index) {
+                                    if let Some(provider) =
+                                        state.providers.get_mut(state.selected_provider_index)
+                                    {
                                         provider.enabled = !provider.enabled;
                                     }
                                 }
                                 ConfigTab::Keymap => {
                                     state.keymap_editing = true;
-                                    state.keymap_input = state.keymap.get_field(state.selected_keymap_index).to_string();
+                                    state.keymap_input = state
+                                        .keymap
+                                        .get_field(state.selected_keymap_index)
+                                        .to_string();
                                     self.input_mode = InputMode::Editing;
                                 }
-                                ConfigTab::Settings => {
-                                    match state.selected_setting_index {
-                                        0 => state.settings.show_icons = !state.settings.show_icons,
-                                        1 => state.settings.confirm_delete = !state.settings.confirm_delete,
-                                        2 => self.input_mode = InputMode::Editing,
-                                        3 => state.settings.log_to_file = !state.settings.log_to_file,
-                                        4 => self.input_mode = InputMode::Editing,
-                                        _ => {}
+                                ConfigTab::Settings => match state.selected_setting_index {
+                                    0 => state.settings.show_icons = !state.settings.show_icons,
+                                    1 => {
+                                        state.settings.confirm_delete =
+                                            !state.settings.confirm_delete
                                     }
-                                }
+                                    2 => self.input_mode = InputMode::Editing,
+                                    3 => state.settings.log_to_file = !state.settings.log_to_file,
+                                    4 => self.input_mode = InputMode::Editing,
+                                    _ => {}
+                                },
                                 ConfigTab::Theme => {} // already applied live via j/k
                             }
                         }
@@ -1109,19 +1268,25 @@ impl App {
                             if let Some(state) = &mut self.config_modal_state {
                                 if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
                                     state.keymap_input.clear();
-                                } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                } else if key_modifiers
+                                    .contains(crossterm::event::KeyModifiers::ALT)
+                                {
                                     delete_previous_word(&mut state.keymap_input);
                                 } else {
                                     state.keymap_input.pop();
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('w')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             if let Some(state) = &mut self.config_modal_state {
                                 delete_previous_word(&mut state.keymap_input);
                             }
                         }
-                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('u')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             if let Some(state) = &mut self.config_modal_state {
                                 state.keymap_input.clear();
                             }
@@ -1145,9 +1310,13 @@ impl App {
                                         *s /= 10;
                                     }
                                     4 => {
-                                        if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
+                                        if key_modifiers
+                                            .contains(crossterm::event::KeyModifiers::SUPER)
+                                        {
                                             state.settings.log_file_path.clear();
-                                        } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
+                                        } else if key_modifiers
+                                            .contains(crossterm::event::KeyModifiers::ALT)
+                                        {
                                             delete_previous_word(&mut state.settings.log_file_path);
                                         } else {
                                             state.settings.log_file_path.pop();
@@ -1157,14 +1326,18 @@ impl App {
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('w')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             if let Some(state) = &mut self.config_modal_state {
                                 if state.selected_setting_index == 4 {
                                     delete_previous_word(&mut state.settings.log_file_path);
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('u')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             if let Some(state) = &mut self.config_modal_state {
                                 if state.selected_setting_index == 4 {
                                     state.settings.log_file_path.clear();
@@ -1176,7 +1349,9 @@ impl App {
                                 match state.selected_setting_index {
                                     2 if c.is_ascii_digit() => {
                                         let s = &mut state.settings.preview_max_bytes;
-                                        *s = s.saturating_mul(10).saturating_add(c.to_digit(10).unwrap_or(0) as usize);
+                                        *s = s
+                                            .saturating_mul(10)
+                                            .saturating_add(c.to_digit(10).unwrap_or(0) as usize);
                                     }
                                     4 => {
                                         state.settings.log_file_path.push(c);
@@ -1197,13 +1372,18 @@ impl App {
                         }
                         crossterm::event::KeyCode::Tab | crossterm::event::KeyCode::Down => {
                             if let Some(state) = &mut self.config_modal_state {
-                                let count = state.providers[state.selected_provider_index].provider_type.field_count();
-                                state.selected_field_index = (state.selected_field_index + 1) % count;
+                                let count = state.providers[state.selected_provider_index]
+                                    .provider_type
+                                    .field_count();
+                                state.selected_field_index =
+                                    (state.selected_field_index + 1) % count;
                             }
                         }
                         crossterm::event::KeyCode::BackTab | crossterm::event::KeyCode::Up => {
                             if let Some(state) = &mut self.config_modal_state {
-                                let count = state.providers[state.selected_provider_index].provider_type.field_count();
+                                let count = state.providers[state.selected_provider_index]
+                                    .provider_type
+                                    .field_count();
                                 if state.selected_field_index == 0 {
                                     state.selected_field_index = count - 1;
                                 } else {
@@ -1215,18 +1395,19 @@ impl App {
                             if let Some(state) = &mut self.config_modal_state {
                                 let provider = &mut state.providers[state.selected_provider_index];
                                 if state.selected_field_index == 1 {
-                                     provider.provider_type = match provider.provider_type {
-                                         ProviderType::S3 => ProviderType::GCS,
-                                         ProviderType::GCS => ProviderType::Azure,
-                                         ProviderType::Azure => ProviderType::S3,
-                                     };
+                                    provider.provider_type = match provider.provider_type {
+                                        ProviderType::S3 => ProviderType::GCS,
+                                        ProviderType::GCS => ProviderType::Azure,
+                                        ProviderType::Azure => ProviderType::S3,
+                                    };
                                 } else if provider.is_cycle_field(state.selected_field_index) {
-                                     match (&provider.provider_type, state.selected_field_index) {
-                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
-                                             provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
-                                         }
-                                         _ => {}
-                                     }
+                                    match (&provider.provider_type, state.selected_field_index) {
+                                        (ProviderType::S3 | ProviderType::Azure, 7) => {
+                                            provider.allow_http =
+                                                Some(!provider.allow_http.unwrap_or(false));
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             }
                         }
@@ -1234,18 +1415,19 @@ impl App {
                             if let Some(state) = &mut self.config_modal_state {
                                 let provider = &mut state.providers[state.selected_provider_index];
                                 if state.selected_field_index == 1 {
-                                     provider.provider_type = match provider.provider_type {
-                                         ProviderType::S3 => ProviderType::Azure,
-                                         ProviderType::GCS => ProviderType::S3,
-                                         ProviderType::Azure => ProviderType::GCS,
-                                     };
+                                    provider.provider_type = match provider.provider_type {
+                                        ProviderType::S3 => ProviderType::Azure,
+                                        ProviderType::GCS => ProviderType::S3,
+                                        ProviderType::Azure => ProviderType::GCS,
+                                    };
                                 } else if provider.is_cycle_field(state.selected_field_index) {
-                                     match (&provider.provider_type, state.selected_field_index) {
-                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
-                                             provider.allow_http = Some(!provider.allow_http.unwrap_or(false));
-                                         }
-                                         _ => {}
-                                     }
+                                    match (&provider.provider_type, state.selected_field_index) {
+                                        (ProviderType::S3 | ProviderType::Azure, 7) => {
+                                            provider.allow_http =
+                                                Some(!provider.allow_http.unwrap_or(false));
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             }
                         }
@@ -1258,22 +1440,36 @@ impl App {
                         crossterm::event::KeyCode::Backspace => {
                             if let Some(state) = &mut self.config_modal_state {
                                 if key_modifiers.contains(crossterm::event::KeyModifiers::SUPER) {
-                                    if let Some(field) = get_editing_field_mut(state) { field.clear(); }
-                                } else if key_modifiers.contains(crossterm::event::KeyModifiers::ALT) {
-                                    if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
+                                    if let Some(field) = get_editing_field_mut(state) {
+                                        field.clear();
+                                    }
+                                } else if key_modifiers
+                                    .contains(crossterm::event::KeyModifiers::ALT)
+                                {
+                                    if let Some(field) = get_editing_field_mut(state) {
+                                        delete_previous_word(field);
+                                    }
                                 } else if let Some(field) = get_editing_field_mut(state) {
                                     field.pop();
                                 }
                             }
                         }
-                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('w')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             if let Some(state) = &mut self.config_modal_state {
-                                if let Some(field) = get_editing_field_mut(state) { delete_previous_word(field); }
+                                if let Some(field) = get_editing_field_mut(state) {
+                                    delete_previous_word(field);
+                                }
                             }
                         }
-                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('u')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             if let Some(state) = &mut self.config_modal_state {
-                                if let Some(field) = get_editing_field_mut(state) { field.clear(); }
+                                if let Some(field) = get_editing_field_mut(state) {
+                                    field.clear();
+                                }
                             }
                         }
                         crossterm::event::KeyCode::Char(c) => {
@@ -1284,7 +1480,7 @@ impl App {
                             }
                         }
                         _ => {}
-                    }
+                    },
                 }
             }
             InputMode::Search => match key_code {
@@ -1307,12 +1503,16 @@ impl App {
                     self.main_list_state.select(Some(0));
                     self.update_preview().await;
                 }
-                crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                crossterm::event::KeyCode::Char('w')
+                    if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
                     delete_previous_word(&mut self.search_query);
                     self.main_list_state.select(Some(0));
                     self.update_preview().await;
                 }
-                crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                crossterm::event::KeyCode::Char('u')
+                    if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
                     self.search_query.clear();
                     self.main_list_state.select(Some(0));
                     self.update_preview().await;
@@ -1323,7 +1523,7 @@ impl App {
                     self.update_preview().await;
                 }
                 _ => {}
-            }
+            },
             InputMode::DownloadPrompt => {
                 if self.file_explorer_search_active {
                     match key_code {
@@ -1343,11 +1543,15 @@ impl App {
                             }
                             self.apply_file_explorer_filter();
                         }
-                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('w')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             delete_previous_word(&mut self.file_explorer_filter);
                             self.apply_file_explorer_filter();
                         }
-                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('u')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             self.file_explorer_filter.clear();
                             self.apply_file_explorer_filter();
                         }
@@ -1407,11 +1611,15 @@ impl App {
                             }
                             self.apply_file_explorer_filter();
                         }
-                        crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('w')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             delete_previous_word(&mut self.file_explorer_filter);
                             self.apply_file_explorer_filter();
                         }
-                        crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('u')
+                            if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             self.file_explorer_filter.clear();
                             self.apply_file_explorer_filter();
                         }
@@ -1459,7 +1667,9 @@ impl App {
                     self.start_batch_delete().await;
                     self.input_mode = InputMode::Normal;
                 }
-                crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Char('N') | crossterm::event::KeyCode::Esc => {
+                crossterm::event::KeyCode::Char('n')
+                | crossterm::event::KeyCode::Char('N')
+                | crossterm::event::KeyCode::Esc => {
                     self.input_mode = InputMode::Normal;
                 }
                 _ => {}
@@ -1483,17 +1693,21 @@ impl App {
                         self.prompt_input.pop();
                     }
                 }
-                crossterm::event::KeyCode::Char('w') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                crossterm::event::KeyCode::Char('w')
+                    if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
                     delete_previous_word(&mut self.prompt_input);
                 }
-                crossterm::event::KeyCode::Char('u') if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                crossterm::event::KeyCode::Char('u')
+                    if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
                     self.prompt_input.clear();
                 }
                 crossterm::event::KeyCode::Char(c) => {
                     self.prompt_input.push(c);
                 }
                 _ => {}
-            }
+            },
             InputMode::OverwriteConfirmation => match key_code {
                 crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
                     if let Some(state) = &mut self.conflict_state {
@@ -1513,27 +1727,37 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
                 crossterm::event::KeyCode::Char('o') => {
-                    if let Some(state) = &mut self.conflict_state { state.selected_option = 0; }
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = 0;
+                    }
                     self.resolve_current_conflict().await;
                 }
                 crossterm::event::KeyCode::Char('s') => {
-                    if let Some(state) = &mut self.conflict_state { state.selected_option = 1; }
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = 1;
+                    }
                     self.resolve_current_conflict().await;
                 }
                 crossterm::event::KeyCode::Char('r') => {
-                    if let Some(state) = &mut self.conflict_state { state.selected_option = 2; }
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = 2;
+                    }
                     self.resolve_current_conflict().await;
                 }
                 crossterm::event::KeyCode::Char('O') => {
-                    if let Some(state) = &mut self.conflict_state { state.selected_option = 3; }
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = 3;
+                    }
                     self.resolve_current_conflict().await;
                 }
                 crossterm::event::KeyCode::Char('S') => {
-                    if let Some(state) = &mut self.conflict_state { state.selected_option = 4; }
+                    if let Some(state) = &mut self.conflict_state {
+                        state.selected_option = 4;
+                    }
                     self.resolve_current_conflict().await;
                 }
                 _ => {}
-            }
+            },
         }
     }
 
@@ -1563,7 +1787,7 @@ impl App {
         let provider = self.storage_providers[provider_idx].clone_box();
         let event_tx = self.event_tx.clone();
         let id = format!("create_folder_{}_{}", bucket, folder_path);
-        
+
         let task = AppTask {
             id: id.clone(),
             description: format!("Creating folder: {}", folder_name),
@@ -1618,7 +1842,9 @@ impl App {
         let item_count = paths_to_delete.len();
         let id = format!("delete_{}", std::time::Instant::now().elapsed().as_nanos());
 
-        let scheme = self.storage_providers[provider_idx].provider_type().scheme();
+        let scheme = self.storage_providers[provider_idx]
+            .provider_type()
+            .scheme();
         let description = if item_count == 1 {
             format!("Deleting {}://{}/{}", scheme, bucket, paths_to_delete[0])
         } else {
@@ -1681,18 +1907,24 @@ impl App {
                                     }
                                 } else {
                                     // First connection — schedule via pending action
-                                    let provider_name = self.storage_providers
+                                    let provider_name = self
+                                        .storage_providers
                                         .get(p_idx)
                                         .map(|p| p.name().to_string())
                                         .unwrap_or_default();
-                                    self.loading_message = Some(format!("Connecting to '{}'...", provider_name));
+                                    self.loading_message =
+                                        Some(format!("Connecting to '{}'...", provider_name));
                                     self.pending_action = Some(PendingAction::ExpandProvider {
                                         provider_index: p_idx,
                                         provider_name,
                                     });
                                 }
                             }
-                            SidebarItem::Bucket { provider_index, name, .. } => {
+                            SidebarItem::Bucket {
+                                provider_index,
+                                name,
+                                ..
+                            } => {
                                 let provider_index = *provider_index;
                                 let name = name.clone();
                                 self.active_provider_index = Some(provider_index);
@@ -1724,7 +1956,9 @@ impl App {
                                 (self.current_bucket.clone(), self.sidebar_state.selected())
                             {
                                 let items = self.sidebar_items();
-                                if let Some(SidebarItem::Bucket { provider_index, .. }) = items.get(sidebar_index) {
+                                if let Some(SidebarItem::Bucket { provider_index, .. }) =
+                                    items.get(sidebar_index)
+                                {
                                     self.loading_message = Some("Loading...".to_string());
                                     self.pending_action = Some(PendingAction::LoadObjects {
                                         provider_index: *provider_index,
@@ -1749,7 +1983,9 @@ impl App {
                 let parent = path.parent();
                 if let Some(sidebar_index) = self.sidebar_state.selected() {
                     let items = self.sidebar_items();
-                    if let Some(SidebarItem::Bucket { provider_index, .. }) = items.get(sidebar_index) {
+                    if let Some(SidebarItem::Bucket { provider_index, .. }) =
+                        items.get(sidebar_index)
+                    {
                         self.loading_message = Some("Loading...".to_string());
                         self.pending_action = Some(PendingAction::LoadObjects {
                             provider_index: *provider_index,
@@ -1771,7 +2007,10 @@ impl App {
         };
 
         match action {
-            PendingAction::ExpandProvider { provider_index, provider_name } => {
+            PendingAction::ExpandProvider {
+                provider_index,
+                provider_name,
+            } => {
                 let provider = match self.storage_providers.get(provider_index) {
                     Some(p) => p.clone_box(),
                     None => {
@@ -1789,7 +2028,13 @@ impl App {
                     });
                 });
             }
-            PendingAction::LoadObjects { provider_index, bucket, path, set_current_path, highlight_path } => {
+            PendingAction::LoadObjects {
+                provider_index,
+                bucket,
+                path,
+                set_current_path,
+                highlight_path,
+            } => {
                 let provider = match self.storage_providers.get(provider_index) {
                     Some(p) => p.clone_box(),
                     None => {
@@ -1912,11 +2157,20 @@ impl App {
                         if let Some(bucket) = &self.current_bucket {
                             if let Some(sidebar_index) = self.sidebar_state.selected() {
                                 let items = self.sidebar_items();
-                                if let Some(SidebarItem::Bucket { provider_index, .. }) = items.get(sidebar_index) {
-                                    if let Some(provider) = self.storage_providers.get(*provider_index) {
-                                        match provider.get_object_preview(bucket, &obj.path, 1024).await {
+                                if let Some(SidebarItem::Bucket { provider_index, .. }) =
+                                    items.get(sidebar_index)
+                                {
+                                    if let Some(provider) =
+                                        self.storage_providers.get(*provider_index)
+                                    {
+                                        match provider
+                                            .get_object_preview(bucket, &obj.path, 1024)
+                                            .await
+                                        {
                                             Ok(bytes) => self.preview_data = Some(bytes),
-                                            Err(e) => tracing::error!("Failed to get preview: {}", e),
+                                            Err(e) => {
+                                                tracing::error!("Failed to get preview: {}", e)
+                                            }
                                         }
                                     }
                                 }
@@ -1969,10 +2223,15 @@ impl App {
                 match provider.list_objects_recursive(&bucket, Some(path)).await {
                     Ok(objects) => {
                         for obj in objects {
-                            let rel = obj.path.as_ref().strip_prefix(path.as_ref())
+                            let rel = obj
+                                .path
+                                .as_ref()
+                                .strip_prefix(path.as_ref())
                                 .unwrap_or(obj.path.as_ref())
                                 .trim_start_matches('/');
-                            if rel.is_empty() { continue; }
+                            if rel.is_empty() {
+                                continue;
+                            }
                             let local_path = local_base_path.join(&folder_name).join(rel);
                             all_items.push(ConflictOperation::Download {
                                 remote_path: obj.path,
@@ -1989,7 +2248,12 @@ impl App {
             } else {
                 let filename = path.filename().unwrap_or(path.as_ref()).to_string();
                 let local_path = local_base_path.join(&filename);
-                let size = self.objects.iter().find(|o| o.path == *path).map(|o| o.size).unwrap_or(0);
+                let size = self
+                    .objects
+                    .iter()
+                    .find(|o| o.path == *path)
+                    .map(|o| o.size)
+                    .unwrap_or(0);
                 all_items.push(ConflictOperation::Download {
                     remote_path: path.clone(),
                     local_path,
@@ -2009,10 +2273,18 @@ impl App {
         let mut conflicts = Vec::new();
         let mut no_conflict = Vec::new();
         for item in all_items {
-            if let ConflictOperation::Download { ref local_path, ref remote_path, .. } = item {
+            if let ConflictOperation::Download {
+                ref local_path,
+                ref remote_path,
+                ..
+            } = item
+            {
                 if local_path.exists() {
                     conflicts.push(PendingConflict {
-                        source_name: remote_path.filename().unwrap_or(remote_path.as_ref()).to_string(),
+                        source_name: remote_path
+                            .filename()
+                            .unwrap_or(remote_path.as_ref())
+                            .to_string(),
                         target_display: local_path.to_string_lossy().to_string(),
                         operation: item,
                     });
@@ -2023,7 +2295,8 @@ impl App {
         }
 
         if conflicts.is_empty() {
-            self.execute_download_batch(no_conflict, &bucket, provider_idx).await;
+            self.execute_download_batch(no_conflict, &bucket, provider_idx)
+                .await;
             self.input_mode = InputMode::Normal;
         } else {
             self.conflict_state = Some(ConflictResolutionState {
@@ -2052,7 +2325,11 @@ impl App {
             None => return,
         };
 
-        let filename = local_path.file_name().and_then(|n| n.to_str()).unwrap_or("uploaded_file").to_string();
+        let filename = local_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("uploaded_file")
+            .to_string();
         let remote_path = if let Some(p) = &self.current_path {
             p.child(&*filename)
         } else {
@@ -2070,7 +2347,10 @@ impl App {
         };
 
         let total_size = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
-        let key_exists = self.objects.iter().any(|o| o.path == remote_path && !o.is_dir);
+        let key_exists = self
+            .objects
+            .iter()
+            .any(|o| o.path == remote_path && !o.is_dir);
 
         let item = ConflictOperation::Upload {
             local_path,
@@ -2079,7 +2359,9 @@ impl App {
         };
 
         if key_exists {
-            let existing_keys: HashSet<String> = self.objects.iter()
+            let existing_keys: HashSet<String> = self
+                .objects
+                .iter()
                 .filter(|o| !o.is_dir)
                 .map(|o| o.path.to_string())
                 .collect();
@@ -2099,7 +2381,8 @@ impl App {
             });
             self.input_mode = InputMode::OverwriteConfirmation;
         } else {
-            self.execute_upload_batch(vec![item], &bucket, provider_idx).await;
+            self.execute_upload_batch(vec![item], &bucket, provider_idx)
+                .await;
             self.input_mode = InputMode::Normal;
         }
     }
@@ -2126,7 +2409,8 @@ impl App {
             _ => return,
         };
 
-        let folder_name = folder_path.file_name()
+        let folder_name = folder_path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("folder")
             .to_string();
@@ -2138,7 +2422,11 @@ impl App {
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
                 Err(err) => {
-                    self.set_error(format!("Failed to read directory {}: {}", dir.display(), err));
+                    self.set_error(format!(
+                        "Failed to read directory {}: {}",
+                        dir.display(),
+                        err
+                    ));
                     return;
                 }
             };
@@ -2175,7 +2463,10 @@ impl App {
                     }
                 }
             }
-            let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            let file_name = file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file");
             remote_path = remote_path.child(file_name);
             let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
             all_items.push(ConflictOperation::Upload {
@@ -2187,18 +2478,34 @@ impl App {
 
         // Check for remote conflicts by listing existing objects under the target prefix
         let provider = &self.storage_providers[provider_idx];
-        let existing_keys: HashSet<String> = match provider.list_objects_recursive(&bucket, Some(&base_remote)).await {
-            Ok(objects) => objects.into_iter().filter(|o| !o.is_dir).map(|o| o.path.to_string()).collect(),
+        let existing_keys: HashSet<String> = match provider
+            .list_objects_recursive(&bucket, Some(&base_remote))
+            .await
+        {
+            Ok(objects) => objects
+                .into_iter()
+                .filter(|o| !o.is_dir)
+                .map(|o| o.path.to_string())
+                .collect(),
             Err(_) => HashSet::new(),
         };
 
         let mut conflicts = Vec::new();
         let mut no_conflict = Vec::new();
         for item in all_items {
-            if let ConflictOperation::Upload { ref remote_path, ref local_path, .. } = item {
+            if let ConflictOperation::Upload {
+                ref remote_path,
+                ref local_path,
+                ..
+            } = item
+            {
                 if existing_keys.contains(&remote_path.to_string()) {
                     conflicts.push(PendingConflict {
-                        source_name: local_path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string(),
+                        source_name: local_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("file")
+                            .to_string(),
                         target_display: remote_path.to_string(),
                         operation: item,
                     });
@@ -2209,7 +2516,8 @@ impl App {
         }
 
         if conflicts.is_empty() {
-            self.execute_upload_batch(no_conflict, &bucket, provider_idx).await;
+            self.execute_upload_batch(no_conflict, &bucket, provider_idx)
+                .await;
             self.input_mode = InputMode::Normal;
         } else {
             self.conflict_state = Some(ConflictResolutionState {
@@ -2226,17 +2534,44 @@ impl App {
         }
     }
 
-    async fn execute_download_batch(&mut self, items: Vec<ConflictOperation>, bucket: &str, provider_idx: usize) {
-        if items.is_empty() { return; }
+    async fn execute_download_batch(
+        &mut self,
+        items: Vec<ConflictOperation>,
+        bucket: &str,
+        provider_idx: usize,
+    ) {
+        if items.is_empty() {
+            return;
+        }
 
-        let total_size: u64 = items.iter().map(|item| {
-            if let ConflictOperation::Download { size, .. } = item { *size } else { 0 }
-        }).sum();
+        let total_size: u64 = items
+            .iter()
+            .map(|item| {
+                if let ConflictOperation::Download { size, .. } = item {
+                    *size
+                } else {
+                    0
+                }
+            })
+            .sum();
 
-        let scheme = self.storage_providers[provider_idx].provider_type().scheme();
+        let scheme = self.storage_providers[provider_idx]
+            .provider_type()
+            .scheme();
         let description = if items.len() == 1 {
-            if let ConflictOperation::Download { ref remote_path, ref local_path, .. } = items[0] {
-                format!("Downloading {}://{}/{} to {}", scheme, bucket, remote_path, local_path.display())
+            if let ConflictOperation::Download {
+                ref remote_path,
+                ref local_path,
+                ..
+            } = items[0]
+            {
+                format!(
+                    "Downloading {}://{}/{} to {}",
+                    scheme,
+                    bucket,
+                    remote_path,
+                    local_path.display()
+                )
             } else {
                 "Downloading".to_string()
             }
@@ -2244,8 +2579,13 @@ impl App {
             format!("Downloading {} items", items.len())
         };
 
-        let id = format!("download_batch_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let id = format!(
+            "download_batch_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let task = AppTask {
             id: id.clone(),
             description,
@@ -2258,10 +2598,16 @@ impl App {
 
         let file_count = items.len();
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(file_count));
-        let first_error: Arc<tokio::sync::Mutex<Option<String>>> = Arc::new(tokio::sync::Mutex::new(None));
+        let first_error: Arc<tokio::sync::Mutex<Option<String>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
 
         for item in items {
-            if let ConflictOperation::Download { remote_path, local_path, .. } = item {
+            if let ConflictOperation::Download {
+                remote_path,
+                local_path,
+                ..
+            } = item
+            {
                 let provider = self.storage_providers[provider_idx].clone_box();
                 let event_tx = self.event_tx.clone();
                 let task_id = id.clone();
@@ -2273,10 +2619,15 @@ impl App {
                     let event_tx_inner = event_tx.clone();
                     let task_id_inner = task_id.clone();
                     let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                        let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                        let _ = event_tx_inner.send(AppEvent::TaskProgress {
+                            id: task_id_inner.clone(),
+                            bytes,
+                        });
                     });
 
-                    let result = provider.download(&bucket, &remote_path, &local_path, progress_cb).await;
+                    let result = provider
+                        .download(&bucket, &remote_path, &local_path, progress_cb)
+                        .await;
                     if let Err(e) = &result {
                         let mut err = first_error.lock().await;
                         if err.is_none() {
@@ -2300,17 +2651,44 @@ impl App {
         }
     }
 
-    async fn execute_upload_batch(&mut self, items: Vec<ConflictOperation>, bucket: &str, provider_idx: usize) {
-        if items.is_empty() { return; }
+    async fn execute_upload_batch(
+        &mut self,
+        items: Vec<ConflictOperation>,
+        bucket: &str,
+        provider_idx: usize,
+    ) {
+        if items.is_empty() {
+            return;
+        }
 
-        let total_size: u64 = items.iter().map(|item| {
-            if let ConflictOperation::Upload { size, .. } = item { *size } else { 0 }
-        }).sum();
+        let total_size: u64 = items
+            .iter()
+            .map(|item| {
+                if let ConflictOperation::Upload { size, .. } = item {
+                    *size
+                } else {
+                    0
+                }
+            })
+            .sum();
 
-        let scheme = self.storage_providers[provider_idx].provider_type().scheme();
+        let scheme = self.storage_providers[provider_idx]
+            .provider_type()
+            .scheme();
         let description = if items.len() == 1 {
-            if let ConflictOperation::Upload { ref local_path, ref remote_path, .. } = items[0] {
-                format!("Uploading {} to {}://{}/{}", local_path.display(), scheme, bucket, remote_path)
+            if let ConflictOperation::Upload {
+                ref local_path,
+                ref remote_path,
+                ..
+            } = items[0]
+            {
+                format!(
+                    "Uploading {} to {}://{}/{}",
+                    local_path.display(),
+                    scheme,
+                    bucket,
+                    remote_path
+                )
             } else {
                 "Uploading".to_string()
             }
@@ -2318,8 +2696,13 @@ impl App {
             format!("Uploading {} items", items.len())
         };
 
-        let id = format!("upload_batch_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let id = format!(
+            "upload_batch_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let task = AppTask {
             id: id.clone(),
             description,
@@ -2339,14 +2722,25 @@ impl App {
             let mut overall_result: Result<(), String> = Ok(());
 
             for item in &items {
-                if let ConflictOperation::Upload { local_path, remote_path, .. } = item {
+                if let ConflictOperation::Upload {
+                    local_path,
+                    remote_path,
+                    ..
+                } = item
+                {
                     let event_tx_inner = event_tx.clone();
                     let task_id_inner = task_id.clone();
                     let progress_cb: ProgressCallback = Arc::new(move |bytes| {
-                        let _ = event_tx_inner.send(AppEvent::TaskProgress { id: task_id_inner.clone(), bytes });
+                        let _ = event_tx_inner.send(AppEvent::TaskProgress {
+                            id: task_id_inner.clone(),
+                            bytes,
+                        });
                     });
 
-                    if let Err(e) = provider.upload(&bucket, remote_path, local_path, progress_cb).await {
+                    if let Err(e) = provider
+                        .upload(&bucket, remote_path, local_path, progress_cb)
+                        .await
+                    {
                         overall_result = Err(format!("{}: {}", local_path.display(), e));
                         break;
                     }
@@ -2419,29 +2813,37 @@ impl App {
                 ConflictChoice::Overwrite => {
                     items_to_execute.push(conflict.operation);
                 }
-                ConflictChoice::Rename => {
-                    match conflict.operation {
-                        ConflictOperation::Download { remote_path, local_path, size } => {
-                            let renamed = auto_rename_local_path(&local_path);
-                            items_to_execute.push(ConflictOperation::Download {
-                                remote_path,
-                                local_path: renamed,
-                                size,
-                            });
-                        }
-                        ConflictOperation::Upload { local_path, remote_path, size } => {
-                            let existing = state.existing_remote_keys.as_ref()
-                                .cloned()
-                                .unwrap_or_default();
-                            let renamed = auto_rename_remote_path(&remote_path, &existing);
-                            items_to_execute.push(ConflictOperation::Upload {
-                                local_path,
-                                remote_path: renamed,
-                                size,
-                            });
-                        }
+                ConflictChoice::Rename => match conflict.operation {
+                    ConflictOperation::Download {
+                        remote_path,
+                        local_path,
+                        size,
+                    } => {
+                        let renamed = auto_rename_local_path(&local_path);
+                        items_to_execute.push(ConflictOperation::Download {
+                            remote_path,
+                            local_path: renamed,
+                            size,
+                        });
                     }
-                }
+                    ConflictOperation::Upload {
+                        local_path,
+                        remote_path,
+                        size,
+                    } => {
+                        let existing = state
+                            .existing_remote_keys
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_default();
+                        let renamed = auto_rename_remote_path(&remote_path, &existing);
+                        items_to_execute.push(ConflictOperation::Upload {
+                            local_path,
+                            remote_path: renamed,
+                            size,
+                        });
+                    }
+                },
                 _ => {}
             }
         }
@@ -2451,19 +2853,23 @@ impl App {
         }
 
         // Separate downloads and uploads (a single operation only produces one type)
-        let downloads: Vec<ConflictOperation> = items_to_execute.iter()
+        let downloads: Vec<ConflictOperation> = items_to_execute
+            .iter()
             .filter(|i| matches!(i, ConflictOperation::Download { .. }))
             .cloned()
             .collect();
-        let uploads: Vec<ConflictOperation> = items_to_execute.into_iter()
+        let uploads: Vec<ConflictOperation> = items_to_execute
+            .into_iter()
             .filter(|i| matches!(i, ConflictOperation::Upload { .. }))
             .collect();
 
         if !downloads.is_empty() {
-            self.execute_download_batch(downloads, &state.bucket, state.provider_idx).await;
+            self.execute_download_batch(downloads, &state.bucket, state.provider_idx)
+                .await;
         }
         if !uploads.is_empty() {
-            self.execute_upload_batch(uploads, &state.bucket, state.provider_idx).await;
+            self.execute_upload_batch(uploads, &state.bucket, state.provider_idx)
+                .await;
         }
     }
 }

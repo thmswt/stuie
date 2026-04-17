@@ -1,15 +1,18 @@
 mod icons;
 
+use crate::app::{App, ConfigTab, InputMode, Pane, TaskType};
+use crate::config::{KeymapConfig, SettingsConfig};
+use crate::theme::{self, AppTheme, BUILTIN_THEMES};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Table, Row, Cell, Wrap, WidgetRef},
-    Frame,
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, WidgetRef,
+        Wrap,
+    },
 };
-use crate::app::{App, Pane, InputMode, TaskType, ConfigTab};
-use crate::config::{KeymapConfig, SettingsConfig};
-use crate::theme::{self, AppTheme, BUILTIN_THEMES};
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let theme = theme::get_theme(&app.config.theme);
@@ -37,7 +40,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let max_path_width = path_inner_width.saturating_sub(3); // space for " 📋"
     let shortened_path = shorten_path(&full_path, max_path_width);
 
-    let path_block = Block::default().borders(Borders::ALL).title(" Path ")
+    let path_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Path ")
         .border_style(Style::default().fg(theme.border_inactive));
     let path_para = Paragraph::new(format!(" {}", shortened_path))
         .style(Style::default().fg(theme.text_primary))
@@ -48,25 +53,51 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let path_icon_x = top_chunks[0].x + top_chunks[0].width.saturating_sub(3);
     let path_icon_y = top_chunks[0].y + 1;
     let path_icon_area = Rect::new(path_icon_x, path_icon_y, 2, 1);
-    f.render_widget(Span::styled("📋", Style::default().fg(theme.accent)), path_icon_area);
+    f.render_widget(
+        Span::styled("📋", Style::default().fg(theme.accent)),
+        path_icon_area,
+    );
     app.copy_button_area = Some(path_icon_area);
 
     let is_search = matches!(app.input_mode, InputMode::Search);
-    let search_title = if is_search { " Filter (Esc to exit) " } else { " Filter ('/' to edit) " };
+    let search_title = if is_search {
+        " Filter (Esc to exit) "
+    } else {
+        " Filter ('/' to edit) "
+    };
     let search_block = Block::default()
         .borders(Borders::ALL)
         .title(search_title)
-        .border_style(if is_search { Style::default().fg(theme.border_active) } else { Style::default().fg(theme.border_inactive) })
-        .border_type(if is_search { BorderType::Thick } else { BorderType::Plain });
-    
+        .border_style(if is_search {
+            Style::default().fg(theme.border_active)
+        } else {
+            Style::default().fg(theme.border_inactive)
+        })
+        .border_type(if is_search {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        });
+
     let (search_text, search_style) = if is_search {
-        (format!("{}|", app.search_query), Style::default().fg(theme.text_primary))
+        (
+            format!("{}|", app.search_query),
+            Style::default().fg(theme.text_primary),
+        )
     } else if app.search_query.is_empty() {
-        (" (no filter)".to_string(), Style::default().fg(theme.text_primary))
+        (
+            " (no filter)".to_string(),
+            Style::default().fg(theme.text_primary),
+        )
     } else {
-        (format!(" {}", app.search_query), Style::default().fg(theme.text_primary))
+        (
+            format!(" {}", app.search_query),
+            Style::default().fg(theme.text_primary),
+        )
     };
-    let search_para = Paragraph::new(search_text).style(search_style).block(search_block);
+    let search_para = Paragraph::new(search_text)
+        .style(search_style)
+        .block(search_block);
     f.render_widget(search_para, top_chunks[1]);
 
     // Middle Panes
@@ -101,47 +132,69 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let sidebar_items: Vec<ListItem> = raw_sidebar_items
         .iter()
         .enumerate()
-        .map(|(i, item)| {
-            match item {
-                crate::app::SidebarItem::Provider(idx) => {
-                    if let Some(provider) = app.storage_providers.get(*idx) {
-                        let expand_icon = if app.expanded_providers.contains(idx) { "\u{25bc}" } else { "\u{25b6}" };
-                        if show_icons {
-                            let picon = icons::provider_icon(&provider.provider_type());
-                            ListItem::new(Line::from(vec![
-                                Span::raw(format!("{} ", expand_icon)),
-                                Span::styled(format!("{} ", picon.symbol), Style::default().fg(picon.color)),
-                                Span::raw(format!("{}", provider.name())),
-                            ])).style(Style::default().add_modifier(Modifier::BOLD))
-                        } else {
-                            ListItem::new(format!("{} ({:?} - {})", expand_icon, provider.provider_type(), provider.name()))
-                                .style(Style::default().add_modifier(Modifier::BOLD))
-                        }
+        .map(|(i, item)| match item {
+            crate::app::SidebarItem::Provider(idx) => {
+                if let Some(provider) = app.storage_providers.get(*idx) {
+                    let expand_icon = if app.expanded_providers.contains(idx) {
+                        "\u{25bc}"
                     } else {
-                        ListItem::new("Unknown Provider")
-                    }
-                }
-                crate::app::SidebarItem::Bucket { name, location, .. } => {
-                    let is_last = raw_sidebar_items.get(i + 1)
-                        .map_or(true, |next| matches!(next, crate::app::SidebarItem::Provider(_)));
-                    let branch = if is_last { "└─" } else { "├─" };
-                    let loc_suffix = location.as_ref()
-                        .map(|l| format!(" ({})", l.to_lowercase()))
-                        .unwrap_or_default();
+                        "\u{25b6}"
+                    };
                     if show_icons {
+                        let picon = icons::provider_icon(&provider.provider_type());
                         ListItem::new(Line::from(vec![
-                            Span::styled(format!(" {} ", branch), Style::default().fg(theme.text_muted)),
-                            Span::styled(format!("{} ", icons::ICON_BUCKET.symbol), Style::default().fg(icons::ICON_BUCKET.color)),
-                            Span::styled(name.clone(), Style::default().fg(theme.accent)),
-                            Span::styled(loc_suffix, Style::default().fg(theme.text_muted)),
+                            Span::raw(format!("{} ", expand_icon)),
+                            Span::styled(
+                                format!("{} ", picon.symbol),
+                                Style::default().fg(picon.color),
+                            ),
+                            Span::raw(format!("{}", provider.name())),
                         ]))
+                        .style(Style::default().add_modifier(Modifier::BOLD))
                     } else {
-                        ListItem::new(Line::from(vec![
-                            Span::styled(format!(" {} ", branch), Style::default().fg(theme.text_muted)),
-                            Span::styled(name.clone(), Style::default().fg(theme.accent)),
-                            Span::styled(loc_suffix, Style::default().fg(theme.text_muted)),
-                        ]))
+                        ListItem::new(format!(
+                            "{} ({:?} - {})",
+                            expand_icon,
+                            provider.provider_type(),
+                            provider.name()
+                        ))
+                        .style(Style::default().add_modifier(Modifier::BOLD))
                     }
+                } else {
+                    ListItem::new("Unknown Provider")
+                }
+            }
+            crate::app::SidebarItem::Bucket { name, location, .. } => {
+                let is_last = raw_sidebar_items.get(i + 1).map_or(true, |next| {
+                    matches!(next, crate::app::SidebarItem::Provider(_))
+                });
+                let branch = if is_last { "└─" } else { "├─" };
+                let loc_suffix = location
+                    .as_ref()
+                    .map(|l| format!(" ({})", l.to_lowercase()))
+                    .unwrap_or_default();
+                if show_icons {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", branch),
+                            Style::default().fg(theme.text_muted),
+                        ),
+                        Span::styled(
+                            format!("{} ", icons::ICON_BUCKET.symbol),
+                            Style::default().fg(icons::ICON_BUCKET.color),
+                        ),
+                        Span::styled(name.clone(), Style::default().fg(theme.accent)),
+                        Span::styled(loc_suffix, Style::default().fg(theme.text_muted)),
+                    ]))
+                } else {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", branch),
+                            Style::default().fg(theme.text_muted),
+                        ),
+                        Span::styled(name.clone(), Style::default().fg(theme.accent)),
+                        Span::styled(loc_suffix, Style::default().fg(theme.text_muted)),
+                    ]))
                 }
             }
         })
@@ -156,26 +209,39 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         } else {
             Style::default().fg(theme.border_inactive)
         })
-        .border_type(if is_sidebar_active { BorderType::Thick } else { BorderType::Plain });
+        .border_type(if is_sidebar_active {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        });
 
     let sidebar_list = List::new(sidebar_items)
         .block(sidebar_block)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(theme.highlight_bg).fg(theme.highlight_fg))
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .bg(theme.highlight_bg)
+                .fg(theme.highlight_fg),
+        )
         .highlight_symbol("> ");
     f.render_stateful_widget(sidebar_list, middle_chunks[0], &mut app.sidebar_state);
 
     // Main List and Preview
     {
         let filtered_objects = app.filtered_objects();
-        
+
         // Render Main List Table
         let is_main_active = app.active_pane == Pane::Main;
         let is_normal_mode = matches!(app.input_mode, InputMode::Normal);
-        
+
         let main_title = if app.selected_paths.is_empty() {
             format!(" Objects ({}) ", filtered_objects.len())
         } else {
-            format!(" Objects ({}) — {} selected ", filtered_objects.len(), app.selected_paths.len())
+            format!(
+                " Objects ({}) — {} selected ",
+                filtered_objects.len(),
+                app.selected_paths.len()
+            )
         };
         let main_block = Block::default()
             .borders(Borders::ALL)
@@ -187,10 +253,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             } else {
                 Style::default().fg(theme.border_inactive)
             })
-            .border_type(if is_main_active && is_normal_mode { 
-                BorderType::Thick 
-            } else { 
-                BorderType::Plain 
+            .border_type(if is_main_active && is_normal_mode {
+                BorderType::Thick
+            } else {
+                BorderType::Plain
             });
 
         let header_cells = ["Name", "Size", "Modified"]
@@ -198,53 +264,71 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .map(|h| Cell::from(*h).style(Style::default().add_modifier(Modifier::BOLD)));
         let header = Row::new(header_cells).height(1).bottom_margin(1);
 
-        let rows: Vec<Row> = filtered_objects.iter().map(|obj| {
-            let is_selected = app.selected_paths.contains(&obj.path);
-            let checkbox = if is_selected { "[*]" } else { "[ ]" };
+        let rows: Vec<Row> = filtered_objects
+            .iter()
+            .map(|obj| {
+                let is_selected = app.selected_paths.contains(&obj.path);
+                let checkbox = if is_selected { "[*]" } else { "[ ]" };
 
-            let raw_name = obj.path.filename().unwrap_or_else(|| obj.path.as_ref()).to_string();
-            let mut display_name = raw_name.clone();
-            if obj.is_dir && !display_name.ends_with('/') {
-                display_name.push('/');
-            }
+                let raw_name = obj
+                    .path
+                    .filename()
+                    .unwrap_or_else(|| obj.path.as_ref())
+                    .to_string();
+                let mut display_name = raw_name.clone();
+                if obj.is_dir && !display_name.ends_with('/') {
+                    display_name.push('/');
+                }
 
-            let style = if obj.is_dir {
-                Style::default().fg(theme.folder_color)
-            } else {
-                Style::default().fg(theme.file_color)
-            };
+                let style = if obj.is_dir {
+                    Style::default().fg(theme.folder_color)
+                } else {
+                    Style::default().fg(theme.file_color)
+                };
 
-            let name_cell = if show_icons {
-                let icon = icons::get_file_icon(&raw_name, obj.is_dir);
-                Cell::from(Line::from(vec![
-                    Span::styled(format!("{} ", checkbox), style),
-                    Span::styled(format!("{} ", icon.symbol), Style::default().fg(icon.color)),
-                    Span::styled(display_name, style),
-                ]))
-            } else {
-                Cell::from(format!("{} {}", checkbox, display_name))
-            };
+                let name_cell = if show_icons {
+                    let icon = icons::get_file_icon(&raw_name, obj.is_dir);
+                    Cell::from(Line::from(vec![
+                        Span::styled(format!("{} ", checkbox), style),
+                        Span::styled(format!("{} ", icon.symbol), Style::default().fg(icon.color)),
+                        Span::styled(display_name, style),
+                    ]))
+                } else {
+                    Cell::from(format!("{} {}", checkbox, display_name))
+                };
 
-            Row::new(vec![
-                name_cell,
-                Cell::from(format_size(obj.size)),
-                Cell::from(obj.last_modified.format("%Y-%m-%d %H:%M").to_string()),
-            ]).style(style)
-        }).collect();
+                Row::new(vec![
+                    name_cell,
+                    Cell::from(format_size(obj.size)),
+                    Cell::from(obj.last_modified.format("%Y-%m-%d %H:%M").to_string()),
+                ])
+                .style(style)
+            })
+            .collect();
 
-        let main_table = Table::new(rows, [
-            Constraint::Percentage(50),
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-        ])
+        let main_table = Table::new(
+            rows,
+            [
+                Constraint::Percentage(50),
+                Constraint::Percentage(20),
+                Constraint::Percentage(30),
+            ],
+        )
         .header(header)
         .block(main_block)
-        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD).bg(theme.highlight_bg).fg(theme.highlight_fg))
+        .row_highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .bg(theme.highlight_bg)
+                .fg(theme.highlight_fg),
+        )
         .highlight_symbol("> ");
-        
+
         // Preview Pane (only when enabled — otherwise the main list takes the space)
         if app.preview_enabled {
-            let preview_block = Block::default().borders(Borders::ALL).title(" Preview ")
+            let preview_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Preview ")
                 .border_style(Style::default().fg(theme.border_inactive));
             let preview_inner = preview_block.inner(middle_chunks[2]);
             let preview_chunks = Layout::default()
@@ -263,7 +347,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         if obj.is_dir { "Folder" } else { "File" },
                         obj.last_modified.format("%Y-%m-%d %H:%M:%S")
                     );
-                    let metadata_para = Paragraph::new(metadata).style(Style::default().fg(theme.accent));
+                    let metadata_para =
+                        Paragraph::new(metadata).style(Style::default().fg(theme.accent));
                     f.render_widget(metadata_para, preview_chunks[0]);
 
                     if !obj.is_dir {
@@ -273,20 +358,26 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                             } else {
                                 format_hex(data)
                             };
-                            let content_para = Paragraph::new(content)
-                                .wrap(Wrap { trim: true })
-                                .block(Block::default().borders(Borders::TOP).title(" Content Preview "));
+                            let content_para =
+                                Paragraph::new(content).wrap(Wrap { trim: true }).block(
+                                    Block::default()
+                                        .borders(Borders::TOP)
+                                        .title(" Content Preview "),
+                                );
                             f.render_widget(content_para, preview_chunks[1]);
                         } else {
-                            let loading_para = Paragraph::new("Loading preview...")
-                                .block(Block::default().borders(Borders::TOP).title(" Content Preview "));
+                            let loading_para = Paragraph::new("Loading preview...").block(
+                                Block::default()
+                                    .borders(Borders::TOP)
+                                    .title(" Content Preview "),
+                            );
                             f.render_widget(loading_para, preview_chunks[1]);
                         }
                     }
                 }
             }
         }
-        
+
         f.render_stateful_widget(main_table, middle_chunks[1], &mut app.main_list_state);
     }
 
@@ -301,22 +392,18 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             (Some(ConfigTab::Providers), false) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: q "
             }
-            (Some(ConfigTab::Keymap), true) => {
-                " Type new key | Confirm: Enter | Cancel: Esc "
-            }
+            (Some(ConfigTab::Keymap), true) => " Type new key | Confirm: Enter | Cancel: Esc ",
             (Some(ConfigTab::Keymap), false) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Edit: e/Enter | Save: s | Close: q "
             }
-            (Some(ConfigTab::Settings), true) => {
-                " Type value | Confirm: Enter | Cancel: Esc "
-            }
+            (Some(ConfigTab::Settings), true) => " Type value | Confirm: Enter | Cancel: Esc ",
             (Some(ConfigTab::Settings), false) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Toggle: Enter | Save: s | Close: q "
             }
             (Some(ConfigTab::Theme), _) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Save: s | Close: q "
             }
-            _ => " Save: s | Close: q "
+            _ => " Save: s | Close: q ",
         }
     } else if matches!(app.input_mode, InputMode::OverwriteConfirmation) {
         " Overwrite: o | Skip: s | Rename: r | Overwrite All: O | Skip All: S | Cancel: Esc "
@@ -339,7 +426,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 };
                 format!(
                     " [{}] {}: [{}%] ({}/s)",
-                    if last_task.task_type == TaskType::Upload { "Upload" } else { "Download" },
+                    if last_task.task_type == TaskType::Upload {
+                        "Upload"
+                    } else {
+                        "Download"
+                    },
                     last_task.description,
                     percent,
                     format_size(speed as u64)
@@ -378,10 +469,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let bottom_bar = Paragraph::new(truncated_status)
         .style(Style::default().fg(theme.text_primary))
-        .block(Block::default()
-            .title(" Task ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border_inactive))
+        .block(
+            Block::default()
+                .title(" Task ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_inactive)),
         );
     f.render_widget(bottom_bar, chunks[2]);
 
@@ -389,11 +481,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let task_icon_x = chunks[2].x + chunks[2].width.saturating_sub(3);
     let task_icon_y = chunks[2].y + 1;
     let task_icon_area = Rect::new(task_icon_x, task_icon_y, 2, 1);
-    f.render_widget(Span::styled("📋", Style::default().fg(theme.accent)), task_icon_area);
+    f.render_widget(
+        Span::styled("📋", Style::default().fg(theme.accent)),
+        task_icon_area,
+    );
     app.task_copy_area = Some(task_icon_area);
 
-    let keybindings_para = Paragraph::new(keybindings)
-        .style(Style::default().fg(theme.text_secondary));
+    let keybindings_para =
+        Paragraph::new(keybindings).style(Style::default().fg(theme.text_secondary));
     f.render_widget(keybindings_para, chunks[3]);
 
     // Modals
@@ -406,7 +501,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             render_file_explorer(f, app, " Download to ", theme);
         }
         InputMode::UploadPrompt => {
-            render_file_explorer(f, app, " Select file to upload (Enter: File | F: Upload Folder) ", theme);
+            render_file_explorer(
+                f,
+                app,
+                " Select file to upload (Enter: File | F: Upload Folder) ",
+                theme,
+            );
         }
         InputMode::DeleteConfirmation => {
             render_delete_confirmation(f, app, theme);
@@ -427,7 +527,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             .title(" Confirm Delete ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.error));
-        let text = format!("Are you sure you want to delete provider #{}?\n(y)es / (n)o", index + 1);
+        let text = format!(
+            "Are you sure you want to delete provider #{}?\n(y)es / (n)o",
+            index + 1
+        );
         let para = Paragraph::new(text)
             .block(block)
             .style(Style::default().fg(theme.error));
@@ -453,7 +556,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
         let (help_title, help_text) = if app.show_config_modal {
             if matches!(app.input_mode, InputMode::Editing) {
-                (" Help (Editing Mode) ", "\
+                (
+                    " Help (Editing Mode) ",
+                    "\
 \nField Navigation:
   Tab / S-Tab         : Next / Previous field
   \u{2191} / \u{2193}             : Next / Previous field
@@ -468,9 +573,12 @@ Editing:
 
 Special Fields:
   \u{2190} / \u{2192} : Cycle options (Type / Allow HTTP)
-")
+",
+                )
             } else {
-                (" Help (Configuration) ", "\
+                (
+                    " Help (Configuration) ",
+                    "\
 \nTabs:
   Tab/S-Tab  : Switch between Providers / Keymap / Settings
 
@@ -494,10 +602,13 @@ General:
   s          : Save configuration
   q / Esc    : Close without saving
   ?          : Toggle Help
-")
+",
+                )
             }
         } else {
-            (" Help / Keybindings ", "\
+            (
+                " Help / Keybindings ",
+                "\
 \nNavigation:
   j/k       : Move selection down/up
   Tab       : Switch between Sidebar and Main List
@@ -516,7 +627,8 @@ Actions:
   c         : Toggle Configuration
   ?         : Toggle Help
   q / Esc   : Quit / Close Modal
-")
+",
+            )
         };
 
         let help_block = Block::default().title(help_title).borders(Borders::ALL);
@@ -529,7 +641,8 @@ Actions:
         let frame = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() / 100)
-            .unwrap_or(0) as usize) % spinner_frames.len();
+            .unwrap_or(0) as usize)
+            % spinner_frames.len();
         let spinner = spinner_frames[frame];
 
         let width = (msg.len() as u16 + 8).clamp(30, 70);
@@ -541,7 +654,12 @@ Actions:
         let inner = block.inner(area);
         f.render_widget(block, area);
         let line = Line::from(vec![
-            Span::styled(spinner, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                spinner,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
             Span::raw(msg.as_str()),
         ]);
@@ -555,7 +673,7 @@ Actions:
             .title(" Error ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.error));
-        
+
         let inner_area = block.inner(area);
         f.render_widget(block, area);
 
@@ -564,11 +682,11 @@ Actions:
             Span::raw(" "),
             Span::raw(error.as_str()),
         ]);
-        
+
         let paragraph = Paragraph::new(error_line)
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(theme.error));
-        
+
         f.render_widget(paragraph, inner_area);
 
         // Save error copy area (icon is at start of inner area)
@@ -604,23 +722,32 @@ fn render_delete_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
         .title(" Confirm Batch Delete ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.error));
-    
-    let list_items: Vec<ListItem> = paths_to_delete.iter()
+
+    let list_items: Vec<ListItem> = paths_to_delete
+        .iter()
         .map(|p| ListItem::new(format!("  - {}", p)))
         .collect();
-    
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
         .split(block.inner(area));
-    
+
     f.render_widget(block, area);
-    
-    let list = List::new(list_items).block(Block::default().title(" Items to delete ").borders(Borders::BOTTOM));
+
+    let list = List::new(list_items).block(
+        Block::default()
+            .title(" Items to delete ")
+            .borders(Borders::BOTTOM),
+    );
     f.render_widget(list, chunks[0]);
-    
+
     let confirm_text = format!("Delete {} items? (y)es / (n)o", paths_to_delete.len());
-    let confirm_para = Paragraph::new(confirm_text).style(Style::default().fg(theme.error).add_modifier(Modifier::BOLD));
+    let confirm_para = Paragraph::new(confirm_text).style(
+        Style::default()
+            .fg(theme.error)
+            .add_modifier(Modifier::BOLD),
+    );
     f.render_widget(confirm_para, chunks[1]);
 }
 
@@ -654,7 +781,7 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // File info
+            Constraint::Length(3), // File info
             Constraint::Min(0),    // Options
             Constraint::Length(1), // Hint
         ])
@@ -662,8 +789,7 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
 
     let info_text = format!(
         "\"{}\" already exists at:\n{}",
-        conflict.source_name,
-        conflict.target_display,
+        conflict.source_name, conflict.target_display,
     );
     let info_para = Paragraph::new(info_text)
         .style(Style::default().fg(theme.text_primary))
@@ -678,23 +804,32 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
         ("S", "Skip All"),
     ];
 
-    let option_items: Vec<ListItem> = options.iter().enumerate().map(|(i, (key, label))| {
-        let is_selected = i == state.selected_option;
-        let prefix = if is_selected { "> " } else { "  " };
-        let style = if is_selected {
-            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text_primary)
-        };
-        ListItem::new(Line::from(vec![
-            Span::raw(prefix),
-            Span::styled(format!("[{}] ", key), Style::default().fg(theme.accent)),
-            Span::styled(*label, style),
-        ]))
-    }).collect();
+    let option_items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, (key, label))| {
+            let is_selected = i == state.selected_option;
+            let prefix = if is_selected { "> " } else { "  " };
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.highlight_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(format!("[{}] ", key), Style::default().fg(theme.accent)),
+                Span::styled(*label, style),
+            ]))
+        })
+        .collect();
 
-    let options_list = List::new(option_items)
-        .block(Block::default().borders(Borders::TOP).title(" Choose action "));
+    let options_list = List::new(option_items).block(
+        Block::default()
+            .borders(Borders::TOP)
+            .title(" Choose action "),
+    );
     f.render_widget(options_list, chunks[1]);
 
     let hint = Paragraph::new(" Enter: confirm | Esc: cancel")
@@ -717,23 +852,33 @@ fn render_config_modal(f: &mut Frame, app: &mut App, theme: &AppTheme) {
         // Tab bar + content layout
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(inner_area);
 
         // Render tab bar
-        let tab_spans: Vec<Span> = ConfigTab::ALL.iter().map(|tab| {
-            if *tab == state.active_tab {
-                Span::styled(
-                    format!(" {} ", tab.label()),
-                    Style::default().fg(theme.tab_active_fg).bg(theme.tab_active_bg).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(
-                    format!(" {} ", tab.label()),
-                    Style::default().fg(theme.text_muted),
-                )
-            }
-        }).collect();
+        let tab_spans: Vec<Span> = ConfigTab::ALL
+            .iter()
+            .map(|tab| {
+                if *tab == state.active_tab {
+                    Span::styled(
+                        format!(" {} ", tab.label()),
+                        Style::default()
+                            .fg(theme.tab_active_fg)
+                            .bg(theme.tab_active_bg)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::styled(
+                        format!(" {} ", tab.label()),
+                        Style::default().fg(theme.text_muted),
+                    )
+                }
+            })
+            .collect();
         let tab_line = Paragraph::new(Line::from(tab_spans));
         f.render_widget(tab_line, main_chunks[0]);
 
@@ -748,38 +893,61 @@ fn render_config_modal(f: &mut Frame, app: &mut App, theme: &AppTheme) {
     }
 }
 
-fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
+fn render_config_providers(
+    f: &mut Frame,
+    state: &crate::app::ConfigModalState,
+    area: Rect,
+    theme: &AppTheme,
+) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
         .split(area);
 
-    let providers: Vec<ListItem> = state.providers.iter().enumerate().map(|(i, p)| {
-        let status = if p.enabled { "[ON]" } else { "[OFF]" };
-        let label = format!("{}. {} {}", i + 1, if p.name.is_empty() { "(unnamed)" } else { &p.name }, status);
+    let providers: Vec<ListItem> = state
+        .providers
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let status = if p.enabled { "[ON]" } else { "[OFF]" };
+            let label = format!(
+                "{}. {} {}",
+                i + 1,
+                if p.name.is_empty() {
+                    "(unnamed)"
+                } else {
+                    &p.name
+                },
+                status
+            );
 
-        let style = if i == state.selected_provider_index && !state.edit_mode {
-            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
-        } else if i == state.selected_provider_index {
-            Style::default().fg(theme.highlight_fg)
-        } else if p.enabled {
-            Style::default().fg(theme.success)
-        } else {
-            Style::default().fg(theme.text_muted)
-        };
-        ListItem::new(label).style(style)
-    }).collect();
-    let providers_list = List::new(providers)
-        .block(Block::default().title(" Providers (j/k) ").borders(Borders::ALL));
+            let style = if i == state.selected_provider_index && !state.edit_mode {
+                Style::default()
+                    .fg(theme.highlight_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else if i == state.selected_provider_index {
+                Style::default().fg(theme.highlight_fg)
+            } else if p.enabled {
+                Style::default().fg(theme.success)
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
+            ListItem::new(label).style(style)
+        })
+        .collect();
+    let providers_list = List::new(providers).block(
+        Block::default()
+            .title(" Providers (j/k) ")
+            .borders(Borders::ALL),
+    );
     f.render_widget(providers_list, chunks[0]);
 
     if let Some(provider) = state.providers.get(state.selected_provider_index) {
         let field_names = provider.provider_type.field_names();
         let field_count = provider.provider_type.field_count();
 
-        let constraints: Vec<Constraint> = (0..field_count)
-            .map(|_| Constraint::Length(3))
-            .collect();
+        let constraints: Vec<Constraint> =
+            (0..field_count).map(|_| Constraint::Length(3)).collect();
 
         let fields_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -820,8 +988,15 @@ fn render_config_providers(f: &mut Frame, state: &crate::app::ConfigModalState, 
     }
 }
 
-fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
-    let block = Block::default().title(" Keybindings ").borders(Borders::ALL);
+fn render_config_keymap(
+    f: &mut Frame,
+    state: &crate::app::ConfigModalState,
+    area: Rect,
+    theme: &AppTheme,
+) {
+    let block = Block::default()
+        .title(" Keybindings ")
+        .borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -829,7 +1004,9 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
 
     for i in 0..KeymapConfig::FIELD_COUNT {
         if let Some(header) = KeymapConfig::section_header(i) {
-            let header_style = Style::default().fg(theme.text_primary).add_modifier(Modifier::BOLD);
+            let header_style = Style::default()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD);
             if i > 0 {
                 items.push(ListItem::new(Line::raw("")));
             }
@@ -850,7 +1027,9 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
         let style = if state.keymap_editing && is_selected {
             Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
         } else if is_selected {
-            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.highlight_fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -859,11 +1038,14 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
         items.push(ListItem::new(Line::from(vec![
             Span::raw(prefix),
             Span::styled(format!("  {:<16}", name), style),
-            Span::styled(format!("  {}", value), if state.keymap_editing && is_selected {
-                Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
-            } else {
-                Style::default().fg(theme.accent)
-            }),
+            Span::styled(
+                format!("  {}", value),
+                if state.keymap_editing && is_selected {
+                    Style::default().fg(theme.editing_fg).bg(theme.editing_bg)
+                } else {
+                    Style::default().fg(theme.accent)
+                },
+            ),
         ])));
     }
 
@@ -871,71 +1053,112 @@ fn render_config_keymap(f: &mut Frame, state: &crate::app::ConfigModalState, are
     f.render_widget(list, inner);
 }
 
-fn render_config_settings(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
+fn render_config_settings(
+    f: &mut Frame,
+    state: &crate::app::ConfigModalState,
+    area: Rect,
+    theme: &AppTheme,
+) {
     let block = Block::default().title(" Settings ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let items: Vec<ListItem> = (0..SettingsConfig::FIELD_COUNT).map(|i| {
-        let is_selected = i == state.selected_setting_index;
-        let name = SettingsConfig::field_name(i);
-        let value = match i {
-            0 => if state.settings.show_icons { "true" } else { "false" }.to_string(),
-            1 => if state.settings.confirm_delete { "true" } else { "false" }.to_string(),
-            2 => state.settings.preview_max_bytes.to_string(),
-            3 => if state.settings.log_to_file { "true" } else { "false" }.to_string(),
-            4 => state.settings.log_file_path.clone(),
-            _ => String::new(),
-        };
+    let items: Vec<ListItem> = (0..SettingsConfig::FIELD_COUNT)
+        .map(|i| {
+            let is_selected = i == state.selected_setting_index;
+            let name = SettingsConfig::field_name(i);
+            let value = match i {
+                0 => if state.settings.show_icons {
+                    "true"
+                } else {
+                    "false"
+                }
+                .to_string(),
+                1 => if state.settings.confirm_delete {
+                    "true"
+                } else {
+                    "false"
+                }
+                .to_string(),
+                2 => state.settings.preview_max_bytes.to_string(),
+                3 => if state.settings.log_to_file {
+                    "true"
+                } else {
+                    "false"
+                }
+                .to_string(),
+                4 => state.settings.log_file_path.clone(),
+                _ => String::new(),
+            };
 
-        let style = if is_selected {
-            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.highlight_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
 
-        let hint = match i {
-            0 | 1 | 3 => " (Enter to toggle)",
-            2 | 4 => " (e to edit)",
-            _ => "",
-        };
+            let hint = match i {
+                0 | 1 | 3 => " (Enter to toggle)",
+                2 | 4 => " (e to edit)",
+                _ => "",
+            };
 
-        let prefix = if is_selected { "> " } else { "  " };
-        ListItem::new(Line::from(vec![
-            Span::raw(prefix),
-            Span::styled(format!("{:<20}", name), style),
-            Span::styled(format!("  {}", value), Style::default().fg(theme.accent)),
-            Span::styled(hint, Style::default().fg(theme.text_muted)),
-        ]))
-    }).collect();
+            let prefix = if is_selected { "> " } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(format!("{:<20}", name), style),
+                Span::styled(format!("  {}", value), Style::default().fg(theme.accent)),
+                Span::styled(hint, Style::default().fg(theme.text_muted)),
+            ]))
+        })
+        .collect();
 
     let list = List::new(items);
     f.render_widget(list, inner);
 }
 
-fn render_config_theme(f: &mut Frame, state: &crate::app::ConfigModalState, area: Rect, theme: &AppTheme) {
+fn render_config_theme(
+    f: &mut Frame,
+    state: &crate::app::ConfigModalState,
+    area: Rect,
+    theme: &AppTheme,
+) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)].as_ref())
         .split(area);
 
     // Theme list (left)
-    let theme_items: Vec<ListItem> = BUILTIN_THEMES.iter().enumerate().map(|(i, t)| {
-        let is_selected = i == state.selected_theme_index;
-        let prefix = if is_selected { "> " } else { "  " };
-        let style = if is_selected {
-            Style::default().fg(theme.highlight_fg).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text_primary)
-        };
-        ListItem::new(Line::from(vec![
-            Span::raw(prefix),
-            Span::styled(t.name, style),
-            Span::styled(format!("  {}", t.description), Style::default().fg(theme.text_muted)),
-        ]))
-    }).collect();
-    let theme_list = List::new(theme_items)
-        .block(Block::default().title(" Themes (j/k) ").borders(Borders::ALL));
+    let theme_items: Vec<ListItem> = BUILTIN_THEMES
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let is_selected = i == state.selected_theme_index;
+            let prefix = if is_selected { "> " } else { "  " };
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.highlight_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(prefix),
+                Span::styled(t.name, style),
+                Span::styled(
+                    format!("  {}", t.description),
+                    Style::default().fg(theme.text_muted),
+                ),
+            ]))
+        })
+        .collect();
+    let theme_list = List::new(theme_items).block(
+        Block::default()
+            .title(" Themes (j/k) ")
+            .borders(Borders::ALL),
+    );
     f.render_widget(theme_list, chunks[0]);
 
     // Preview swatch (right)
@@ -946,9 +1169,15 @@ fn render_config_theme(f: &mut Frame, state: &crate::app::ConfigModalState, area
     let preview_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
-            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
-            Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -956,39 +1185,77 @@ fn render_config_theme(f: &mut Frame, state: &crate::app::ConfigModalState, area
 
     let t = &BUILTIN_THEMES[state.selected_theme_index];
 
-    f.render_widget(Paragraph::new(Line::from(vec![
-        Span::styled("  border active ", Style::default().fg(t.border_active)),
-        Span::styled(" border inactive ", Style::default().fg(t.border_inactive)),
-    ])), preview_rows[0]);
-    f.render_widget(Paragraph::new(Line::from(vec![
-        Span::styled("  text primary ", Style::default().fg(t.text_primary)),
-        Span::styled(" secondary ", Style::default().fg(t.text_secondary)),
-        Span::styled(" muted ", Style::default().fg(t.text_muted)),
-    ])), preview_rows[1]);
-    f.render_widget(Paragraph::new(
-        Span::styled("  accent color sample", Style::default().fg(t.accent)),
-    ), preview_rows[2]);
-    f.render_widget(Paragraph::new(Line::from(vec![
-        Span::styled("  file.txt ", Style::default().fg(t.file_color)),
-        Span::styled(" folder/ ", Style::default().fg(t.folder_color)),
-    ])), preview_rows[3]);
-    f.render_widget(Paragraph::new(
-        Span::styled("  highlight row ", Style::default().fg(t.highlight_fg).bg(t.highlight_bg).add_modifier(Modifier::BOLD)),
-    ), preview_rows[4]);
-    f.render_widget(Paragraph::new(
-        Span::styled("  editing field ", Style::default().fg(t.editing_fg).bg(t.editing_bg)),
-    ), preview_rows[5]);
-    f.render_widget(Paragraph::new(
-        Span::styled("  active tab ", Style::default().fg(t.tab_active_fg).bg(t.tab_active_bg).add_modifier(Modifier::BOLD)),
-    ), preview_rows[6]);
-    f.render_widget(Paragraph::new(
-        Span::styled("  modal border", Style::default().fg(t.modal_border)),
-    ), preview_rows[7]);
-    f.render_widget(Paragraph::new(Line::from(vec![
-        Span::styled("  error ", Style::default().fg(t.error)),
-        Span::styled(" success ", Style::default().fg(t.success)),
-        Span::styled(" warning ", Style::default().fg(t.warning)),
-    ])), preview_rows[8]);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  border active ", Style::default().fg(t.border_active)),
+            Span::styled(" border inactive ", Style::default().fg(t.border_inactive)),
+        ])),
+        preview_rows[0],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  text primary ", Style::default().fg(t.text_primary)),
+            Span::styled(" secondary ", Style::default().fg(t.text_secondary)),
+            Span::styled(" muted ", Style::default().fg(t.text_muted)),
+        ])),
+        preview_rows[1],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "  accent color sample",
+            Style::default().fg(t.accent),
+        )),
+        preview_rows[2],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  file.txt ", Style::default().fg(t.file_color)),
+            Span::styled(" folder/ ", Style::default().fg(t.folder_color)),
+        ])),
+        preview_rows[3],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "  highlight row ",
+            Style::default()
+                .fg(t.highlight_fg)
+                .bg(t.highlight_bg)
+                .add_modifier(Modifier::BOLD),
+        )),
+        preview_rows[4],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "  editing field ",
+            Style::default().fg(t.editing_fg).bg(t.editing_bg),
+        )),
+        preview_rows[5],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "  active tab ",
+            Style::default()
+                .fg(t.tab_active_fg)
+                .bg(t.tab_active_bg)
+                .add_modifier(Modifier::BOLD),
+        )),
+        preview_rows[6],
+    );
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "  modal border",
+            Style::default().fg(t.modal_border),
+        )),
+        preview_rows[7],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  error ", Style::default().fg(t.error)),
+            Span::styled(" success ", Style::default().fg(t.success)),
+            Span::styled(" warning ", Style::default().fg(t.warning)),
+        ])),
+        preview_rows[8],
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -1057,13 +1324,10 @@ pub fn format_hex(data: &[u8]) -> String {
     let mut lines = Vec::new();
     for chunk in data.chunks(16) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
-        let ascii: String = chunk.iter().map(|&b| {
-            if b >= 32 && b <= 126 {
-                b as char
-            } else {
-                '.'
-            }
-        }).collect();
+        let ascii: String = chunk
+            .iter()
+            .map(|&b| if b >= 32 && b <= 126 { b as char } else { '.' })
+            .collect();
         lines.push(format!("{:48} | {}", hex.join(" "), ascii));
     }
     lines.join("\n")
@@ -1099,9 +1363,13 @@ fn render_file_explorer(f: &mut Frame, app: &App, title: &str, theme: &AppTheme)
         let search_para = Paragraph::new(search_text).style(search_style);
         f.render_widget(search_para, chunks[0]);
 
-        app.file_explorer.widget().render_ref(chunks[1], f.buffer_mut());
+        app.file_explorer
+            .widget()
+            .render_ref(chunks[1], f.buffer_mut());
     } else {
-        app.file_explorer.widget().render_ref(inner_area, f.buffer_mut());
+        app.file_explorer
+            .widget()
+            .render_ref(inner_area, f.buffer_mut());
     }
 }
 
@@ -1118,12 +1386,12 @@ pub fn shorten_path(full_path: &str, max_width: usize) -> String {
     }
 
     let protocol = parts[0]; // e.g. "s3:"
-    let bucket = parts[2];   // e.g. "mybucket"
+    let bucket = parts[2]; // e.g. "mybucket"
     let protocol_bucket = format!("{}//{}", protocol, bucket);
     let rest = parts[3];
-    
+
     let mut path_parts: Vec<&str> = rest.split('/').collect();
-    
+
     // Replace from left to right with ".." until it fits
     for i in 0..path_parts.len().saturating_sub(1) {
         path_parts[i] = "..";

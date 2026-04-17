@@ -1,7 +1,7 @@
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Context, Result};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Config {
@@ -105,31 +105,77 @@ impl Default for KeymapConfig {
 }
 
 // Normal Mode — Navigation
-fn default_key_move_down() -> String { "j".to_string() }
-fn default_key_move_up() -> String { "k".to_string() }
-fn default_key_enter() -> String { "Enter".to_string() }
-fn default_key_back() -> String { "Backspace".to_string() }
-fn default_key_switch_pane() -> String { "Tab".to_string() }
+fn default_key_move_down() -> String {
+    "j".to_string()
+}
+fn default_key_move_up() -> String {
+    "k".to_string()
+}
+fn default_key_enter() -> String {
+    "Enter".to_string()
+}
+fn default_key_back() -> String {
+    "Backspace".to_string()
+}
+fn default_key_switch_pane() -> String {
+    "Tab".to_string()
+}
 // Normal Mode — Actions
-fn default_key_quit() -> String { "q".to_string() }
-fn default_key_help() -> String { "?".to_string() }
-fn default_key_filter() -> String { "/".to_string() }
-fn default_key_select() -> String { "Space".to_string() }
-fn default_key_copy_path() -> String { "y".to_string() }
-fn default_key_new_folder() -> String { "n".to_string() }
-fn default_key_download() -> String { "d".to_string() }
-fn default_key_upload() -> String { "u".to_string() }
-fn default_key_delete() -> String { "x".to_string() }
-fn default_key_config() -> String { "c".to_string() }
-fn default_key_add_provider() -> String { "a".to_string() }
-fn default_key_toggle_preview() -> String { "p".to_string() }
+fn default_key_quit() -> String {
+    "q".to_string()
+}
+fn default_key_help() -> String {
+    "?".to_string()
+}
+fn default_key_filter() -> String {
+    "/".to_string()
+}
+fn default_key_select() -> String {
+    "Space".to_string()
+}
+fn default_key_copy_path() -> String {
+    "y".to_string()
+}
+fn default_key_new_folder() -> String {
+    "n".to_string()
+}
+fn default_key_download() -> String {
+    "d".to_string()
+}
+fn default_key_upload() -> String {
+    "u".to_string()
+}
+fn default_key_delete() -> String {
+    "x".to_string()
+}
+fn default_key_config() -> String {
+    "c".to_string()
+}
+fn default_key_add_provider() -> String {
+    "a".to_string()
+}
+fn default_key_toggle_preview() -> String {
+    "p".to_string()
+}
 // Edit Mode
-fn default_key_edit_next_field() -> String { "Tab".to_string() }
-fn default_key_edit_prev_field() -> String { "S-Tab".to_string() }
-fn default_key_edit_confirm() -> String { "Enter".to_string() }
-fn default_key_edit_cancel() -> String { "Esc".to_string() }
-fn default_key_edit_cycle_down() -> String { "j".to_string() }
-fn default_key_edit_cycle_up() -> String { "k".to_string() }
+fn default_key_edit_next_field() -> String {
+    "Tab".to_string()
+}
+fn default_key_edit_prev_field() -> String {
+    "S-Tab".to_string()
+}
+fn default_key_edit_confirm() -> String {
+    "Enter".to_string()
+}
+fn default_key_edit_cancel() -> String {
+    "Esc".to_string()
+}
+fn default_key_edit_cycle_down() -> String {
+    "j".to_string()
+}
+fn default_key_edit_cycle_up() -> String {
+    "k".to_string()
+}
 
 impl KeymapConfig {
     /// Total number of editable fields across all sections.
@@ -261,10 +307,18 @@ impl Default for SettingsConfig {
     }
 }
 
-fn default_confirm_delete() -> bool { true }
-fn default_preview_max_bytes() -> usize { 1024 }
-fn default_log_to_file() -> bool { false }
-fn default_log_file_path() -> String { "~/.stuie/session.log".to_string() }
+fn default_confirm_delete() -> bool {
+    true
+}
+fn default_preview_max_bytes() -> usize {
+    1024
+}
+fn default_log_to_file() -> bool {
+    false
+}
+fn default_log_file_path() -> String {
+    "~/.stuie/session.log".to_string()
+}
 
 impl SettingsConfig {
     pub fn field_name(index: usize) -> &'static str {
@@ -346,11 +400,20 @@ impl ProviderType {
     pub fn field_names(&self) -> &'static [&'static str] {
         match self {
             ProviderType::S3 | ProviderType::Azure => &[
-                "Name *", "Type *", "Region *", "Bucket Name (Optional)",
-                "Endpoint (Optional)", "Access Key *", "Secret Key *", "Allow HTTP (Optional)",
+                "Name *",
+                "Type *",
+                "Region *",
+                "Bucket Name (Optional)",
+                "Endpoint (Optional)",
+                "Access Key *",
+                "Secret Key *",
+                "Allow HTTP (Optional)",
             ],
             ProviderType::GCS => &[
-                "Name *", "Type *", "Project", "Bucket Name (Optional)",
+                "Name *",
+                "Type *",
+                "Project",
+                "Bucket Name (Optional)",
                 "Credentials Path (Optional)",
             ],
         }
@@ -408,7 +471,9 @@ impl ProviderConfig {
 
     /// Whether this field index is a cycle/toggle field (not free-text editable).
     pub fn is_cycle_field(&self, index: usize) -> bool {
-        if index == 1 { return true; } // Type field — always a cycle
+        if index == 1 {
+            return true;
+        } // Type field — always a cycle
         match self.provider_type {
             ProviderType::S3 | ProviderType::Azure => index == 7, // Allow HTTP
             ProviderType::GCS => false,
@@ -418,12 +483,16 @@ impl ProviderConfig {
     /// The editing hint shown when a cycle field is selected.
     pub fn cycle_field_hint(&self, index: usize) -> Option<String> {
         if index == 1 {
-            return Some(format!("[ S3 | GCS | Azure ] - Current: {:?}", self.provider_type));
+            return Some(format!(
+                "[ S3 | GCS | Azure ] - Current: {:?}",
+                self.provider_type
+            ));
         }
         match (&self.provider_type, index) {
-            (ProviderType::S3 | ProviderType::Azure, 7) => {
-                Some(format!("[ true | false ] - Current: {}", self.allow_http.unwrap_or(false)))
-            }
+            (ProviderType::S3 | ProviderType::Azure, 7) => Some(format!(
+                "[ true | false ] - Current: {}",
+                self.allow_http.unwrap_or(false)
+            )),
             _ => None,
         }
     }
@@ -436,7 +505,8 @@ impl Config {
             return Ok(Config::default());
         }
         let content = fs::read_to_string(&config_path).context("Failed to read config file")?;
-        let mut config: Config = serde_json::from_str(&content).context("Failed to parse config file")?;
+        let mut config: Config =
+            serde_json::from_str(&content).context("Failed to parse config file")?;
         // Migrate legacy top-level show_icons into settings
         if content.contains("\"show_icons\"") && !content.contains("\"settings\"") {
             config.settings.show_icons = config.show_icons;
