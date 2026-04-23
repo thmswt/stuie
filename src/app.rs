@@ -441,19 +441,12 @@ impl App {
         );
         self.storage_providers = storage_providers;
 
-        // Fetch all buckets
-        let mut all_buckets = Vec::new();
-        for provider in &self.storage_providers {
-            match provider.list_buckets().await {
-                Ok(mut buckets) => all_buckets.append(&mut buckets),
-                Err(e) => tracing::error!(
-                    "Failed to list buckets for provider {}: {}",
-                    provider.name(),
-                    e
-                ),
-            }
-        }
-        self.all_buckets = all_buckets;
+        // Buckets are fetched lazily via ExpandProvider (Enter on a provider row).
+        // Clear state keyed on the previous provider indexes so stale buckets from a
+        // prior provider list don't render against the rebuilt positions.
+        self.all_buckets.clear();
+        self.activated_providers.clear();
+        self.expanded_providers.clear();
 
         // Reset sidebar state if needed
         if self.sidebar_state.selected().is_none() && !self.sidebar_items().is_empty() {
@@ -584,23 +577,15 @@ impl App {
                                 None
                             });
 
-                            if let Some((item_idx, name)) = first_bucket {
+                            if let Some((item_idx, _)) = first_bucket {
+                                // Move the cursor to the first bucket for convenience,
+                                // but don't fetch objects — that happens when the user
+                                // presses Enter on the bucket row.
                                 self.sidebar_state.select(Some(item_idx));
-                                self.current_bucket = Some(name.clone());
-                                self.current_path = None;
-                                self.search_query.clear();
                                 self.save_message =
                                     Some(format!("Connected to '{}'", provider_name));
                                 self.save_message_time = Some(std::time::Instant::now());
-                                // Chain: load objects for the auto-selected bucket
-                                self.loading_message = Some("Loading...".to_string());
-                                self.pending_action = Some(PendingAction::LoadObjects {
-                                    provider_index,
-                                    bucket: name,
-                                    path: None,
-                                    set_current_path: false,
-                                    highlight_path: None,
-                                });
+                                self.loading_message = None;
                             } else {
                                 self.save_message = Some(format!(
                                     "Connected to '{}', but no buckets found.",
@@ -1943,27 +1928,16 @@ impl App {
                                 if self.expanded_providers.contains(&p_idx) {
                                     self.expanded_providers.remove(&p_idx);
                                 } else if self.activated_providers.contains(&p_idx) {
-                                    // Already connected — expand using cached buckets
-                                    self.active_provider_index = Some(p_idx);
+                                    // Already connected — expand using cached buckets.
+                                    // Move the cursor onto the first bucket for convenience;
+                                    // objects are fetched only when the user presses Enter
+                                    // on the bucket row.
                                     self.expanded_providers.insert(p_idx);
                                     let items = self.sidebar_items();
-                                    if let Some((item_idx, bucket_item)) = items.iter().enumerate().find(|(_, item)| {
-                                        matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == p_idx)
-                                    }) {
-                                        if let SidebarItem::Bucket { provider_index, name, .. } = bucket_item {
-                                            self.sidebar_state.select(Some(item_idx));
-                                            self.current_bucket = Some(name.clone());
-                                            self.current_path = None;
-                                            self.search_query.clear();
-                                            self.loading_message = Some("Loading...".to_string());
-                                            self.pending_action = Some(PendingAction::LoadObjects {
-                                                provider_index: *provider_index,
-                                                bucket: name.clone(),
-                                                path: None,
-                                                set_current_path: false,
-                                                highlight_path: None,
-                                            });
-                                        }
+                                    if let Some((item_idx, _)) = items.iter().enumerate().find(
+                                        |(_, item)| matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == p_idx),
+                                    ) {
+                                        self.sidebar_state.select(Some(item_idx));
                                     }
                                 } else {
                                     // First connection — schedule via pending action
