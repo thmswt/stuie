@@ -293,6 +293,10 @@ pub struct SettingsConfig {
     pub log_to_file: bool,
     #[serde(default = "default_log_file_path")]
     pub log_file_path: String,
+    #[serde(default = "default_diagnostics_enabled")]
+    pub diagnostics_enabled: bool,
+    #[serde(default = "default_diagnostics_log_dir")]
+    pub diagnostics_log_dir: String,
 }
 
 impl Default for SettingsConfig {
@@ -303,6 +307,8 @@ impl Default for SettingsConfig {
             preview_max_bytes: default_preview_max_bytes(),
             log_to_file: default_log_to_file(),
             log_file_path: default_log_file_path(),
+            diagnostics_enabled: default_diagnostics_enabled(),
+            diagnostics_log_dir: default_diagnostics_log_dir(),
         }
     }
 }
@@ -319,6 +325,12 @@ fn default_log_to_file() -> bool {
 fn default_log_file_path() -> String {
     "~/.stuie/session.log".to_string()
 }
+fn default_diagnostics_enabled() -> bool {
+    true
+}
+fn default_diagnostics_log_dir() -> String {
+    "logs".to_string()
+}
 
 impl SettingsConfig {
     pub fn field_name(index: usize) -> &'static str {
@@ -328,11 +340,13 @@ impl SettingsConfig {
             2 => "Preview Max Bytes",
             3 => "Log Tasks To File",
             4 => "Log File Path",
+            5 => "Diagnostics Enabled",
+            6 => "Diagnostics Log Dir",
             _ => "",
         }
     }
 
-    pub const FIELD_COUNT: usize = 5;
+    pub const FIELD_COUNT: usize = 7;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

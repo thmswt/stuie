@@ -1088,6 +1088,13 @@ fn render_config_settings(
                 }
                 .to_string(),
                 4 => state.settings.log_file_path.clone(),
+                5 => if state.settings.diagnostics_enabled {
+                    "true"
+                } else {
+                    "false"
+                }
+                .to_string(),
+                6 => state.settings.diagnostics_log_dir.clone(),
                 _ => String::new(),
             };
 
@@ -1100,8 +1107,8 @@ fn render_config_settings(
             };
 
             let hint = match i {
-                0 | 1 | 3 => " (Enter to toggle)",
-                2 | 4 => " (e to edit)",
+                0 | 1 | 3 | 5 => " (Enter to toggle)",
+                2 | 4 | 6 => " (e to edit)",
                 _ => "",
             };
 

@@ -7,22 +7,42 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::fs;
 use stuie::app::App;
+use stuie::config::Config;
 use stuie::ui::ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup logging
-    let file_appender = tracing_appender::rolling::daily("logs", "stuie.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-    tracing_subscriber::fmt()
-        .with_writer(non_blocking)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    // Load config early so diagnostics settings can gate tracing init.
+    let early_config = Config::load().unwrap_or_default();
 
-    tracing::info!("Starting stuie...");
+    // Setup logging only when diagnostics are enabled. The non-blocking guard must
+    // outlive any tracing calls, so we bind it to a let with a matching lifetime.
+    let _log_guard = if early_config.settings.diagnostics_enabled {
+        let log_dir = if early_config.settings.diagnostics_log_dir.trim().is_empty() {
+            "logs".to_string()
+        } else {
+            early_config.settings.diagnostics_log_dir.clone()
+        };
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "stuie.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::fmt()
+            .with_writer(non_blocking)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive(tracing::Level::INFO.into()),
+            )
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+            .with_target(true)
+            .init();
+        tracing::info!(
+            version = env!("CARGO_PKG_VERSION"),
+            log_dir = %log_dir,
+            "Starting stuie"
+        );
+        Some(guard)
+    } else {
+        None
+    };
 
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;

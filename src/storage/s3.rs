@@ -92,9 +92,11 @@ impl StorageBackend for S3Storage {
         ProviderType::S3
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name))]
     async fn list_buckets(&self) -> Result<Vec<Bucket>> {
         if let Some(bucket_name) = &self.config.bucket_name {
             if !bucket_name.trim().is_empty() {
+                tracing::info!(bucket = %bucket_name, "Using configured bucket; skipping ListBuckets API call");
                 return Ok(vec![Bucket {
                     name: bucket_name.clone(),
                     provider_index: self.provider_index,
@@ -103,13 +105,14 @@ impl StorageBackend for S3Storage {
             }
         }
 
+        tracing::info!("Listing S3 buckets");
         let resp = self
             .client
             .list_buckets()
             .send()
             .await
             .context("Failed to list buckets from S3")?;
-        let buckets = resp
+        let buckets: Vec<Bucket> = resp
             .buckets
             .unwrap_or_default()
             .into_iter()
@@ -126,9 +129,11 @@ impl StorageBackend for S3Storage {
                 }
             })
             .collect();
+        tracing::info!(bucket_count = buckets.len(), "S3 bucket listing complete");
         Ok(buckets)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, prefix = ?prefix))]
     async fn list_objects(&self, bucket: &str, prefix: Option<&Path>) -> Result<Vec<Object>> {
         let mut objects = Vec::new();
         let store = self.create_store(bucket)?;
@@ -168,9 +173,11 @@ impl StorageBackend for S3Storage {
             });
         }
 
+        tracing::info!(object_count = objects.len(), "S3 list_objects complete");
         Ok(objects)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, prefix = ?prefix))]
     async fn list_objects_recursive(
         &self,
         bucket: &str,
@@ -192,9 +199,14 @@ impl StorageBackend for S3Storage {
                 last_modified: meta.last_modified,
             });
         }
+        tracing::info!(
+            object_count = objects.len(),
+            "S3 list_objects_recursive complete"
+        );
         Ok(objects)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path, max_bytes))]
     async fn get_object_preview(
         &self,
         bucket: &str,
@@ -208,9 +220,11 @@ impl StorageBackend for S3Storage {
         };
         let result = store.get_opts(path, options).await?;
         let bytes = result.bytes().await?;
+        tracing::debug!(byte_count = bytes.len(), "S3 preview fetched");
         Ok(bytes)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path, local_path = %local_path.display()))]
     async fn download(
         &self,
         bucket: &str,
@@ -218,6 +232,7 @@ impl StorageBackend for S3Storage {
         local_path: &std::path::Path,
         progress_cb: ProgressCallback,
     ) -> Result<()> {
+        tracing::info!("S3 download started");
         let store = self.create_store(bucket)?;
         let result = store.get(path).await?;
 
@@ -227,17 +242,21 @@ impl StorageBackend for S3Storage {
 
         let mut file = tokio::fs::File::create(local_path).await?;
         let mut stream = result.into_stream();
+        let mut total_bytes: u64 = 0;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
             file.write_all(&chunk).await?;
+            total_bytes += chunk.len() as u64;
             progress_cb(chunk.len() as u64);
         }
 
         file.flush().await?;
+        tracing::info!(bytes = total_bytes, "S3 download complete");
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path, local_path = %local_path.display()))]
     async fn upload(
         &self,
         bucket: &str,
@@ -245,11 +264,13 @@ impl StorageBackend for S3Storage {
         local_path: &std::path::Path,
         progress_cb: ProgressCallback,
     ) -> Result<()> {
+        tracing::info!("S3 upload started");
         let store = self.create_store(bucket)?;
         let mut file = tokio::fs::File::open(local_path).await?;
         let mut upload = store.put_multipart(path).await?;
 
         let mut buffer = vec![0u8; 5 * 1024 * 1024]; // 5MB chunks
+        let mut total_bytes: u64 = 0;
         loop {
             let n = file.read(&mut buffer).await?;
             if n == 0 {
@@ -257,13 +278,16 @@ impl StorageBackend for S3Storage {
             }
             let chunk = bytes::Bytes::copy_from_slice(&buffer[..n]);
             upload.put_part(chunk.into()).await?;
+            total_bytes += n as u64;
             progress_cb(n as u64);
         }
 
         upload.complete().await?;
+        tracing::info!(bytes = total_bytes, "S3 upload complete");
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path))]
     async fn create_folder(&self, bucket: &str, path: &Path) -> Result<()> {
         // Object stores don't have real folders, we create a zero-byte object with a trailing slash
         // Ensure path ends with / if it doesn't already
@@ -284,7 +308,10 @@ impl StorageBackend for S3Storage {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, target_count = paths.len()))]
     async fn delete_objects(&self, bucket: &str, paths: &[Path]) -> Result<()> {
+        tracing::info!("S3 delete started");
+        let mut deleted_keys: u64 = 0;
         for path in paths {
             let path_str = path.to_string();
 
@@ -344,6 +371,7 @@ impl StorageBackend for S3Storage {
                                 .send()
                                 .await
                                 .context("Failed to delete object")?;
+                            deleted_keys += 1;
                         }
                     }
                 }
@@ -356,6 +384,7 @@ impl StorageBackend for S3Storage {
             }
         }
 
+        tracing::info!(deleted_keys, "S3 delete complete");
         Ok(())
     }
 

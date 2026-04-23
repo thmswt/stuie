@@ -102,7 +102,7 @@ pub enum SidebarItem {
     },
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TaskType {
     Upload,
     Download,
@@ -423,6 +423,22 @@ impl App {
         for (config_index, project) in project_backfills {
             self.config.providers[config_index].project = Some(project);
         }
+        let disabled_count = self
+            .config
+            .providers
+            .iter()
+            .filter(|p| !p.enabled)
+            .count();
+        tracing::info!(
+            initialized = storage_providers.len(),
+            disabled = disabled_count,
+            total_configured = self.config.providers.len(),
+            providers = ?storage_providers
+                .iter()
+                .map(|p| format!("{:?}:{}", p.provider_type(), p.name()))
+                .collect::<Vec<_>>(),
+            "Storage providers initialized"
+        );
         self.storage_providers = storage_providers;
 
         // Fetch all buckets
@@ -494,6 +510,25 @@ impl App {
                 }
                 AppEvent::TaskFinished { id, result } => {
                     if let Some(task) = self.active_tasks.iter().find(|t| t.id == id) {
+                        let duration_ms = task.start_time.elapsed().as_millis() as u64;
+                        match &result {
+                            Ok(()) => tracing::info!(
+                                task_id = %id,
+                                task_type = ?task.task_type,
+                                description = %task.description,
+                                duration_ms,
+                                bytes = task.bytes_transferred,
+                                "Task finished OK"
+                            ),
+                            Err(e) => tracing::error!(
+                                task_id = %id,
+                                task_type = ?task.task_type,
+                                description = %task.description,
+                                duration_ms,
+                                error = %e,
+                                "Task failed"
+                            ),
+                        }
                         let finished = FinishedTask {
                             description: task.description.clone(),
                             task_type: task.task_type.clone(),
@@ -1140,10 +1175,9 @@ impl App {
                                 self.input_mode = InputMode::Editing;
                             }
                             ConfigTab::Settings => {
-                                // 'e' for editable fields (preview_max_bytes = 2, log_file_path = 4)
-                                if state.selected_setting_index == 2
-                                    || state.selected_setting_index == 4
-                                {
+                                // 'e' for editable fields:
+                                // preview_max_bytes=2, log_file_path=4, diagnostics_log_dir=6
+                                if matches!(state.selected_setting_index, 2 | 4 | 6) {
                                     self.input_mode = InputMode::Editing;
                                 }
                             }
@@ -1233,6 +1267,11 @@ impl App {
                                     2 => self.input_mode = InputMode::Editing,
                                     3 => state.settings.log_to_file = !state.settings.log_to_file,
                                     4 => self.input_mode = InputMode::Editing,
+                                    5 => {
+                                        state.settings.diagnostics_enabled =
+                                            !state.settings.diagnostics_enabled
+                                    }
+                                    6 => self.input_mode = InputMode::Editing,
                                     _ => {}
                                 },
                                 ConfigTab::Theme => {} // already applied live via j/k
@@ -1316,17 +1355,22 @@ impl App {
                                         let s = &mut state.settings.preview_max_bytes;
                                         *s /= 10;
                                     }
-                                    4 => {
+                                    4 | 6 => {
+                                        let target = if state.selected_setting_index == 4 {
+                                            &mut state.settings.log_file_path
+                                        } else {
+                                            &mut state.settings.diagnostics_log_dir
+                                        };
                                         if key_modifiers
                                             .contains(crossterm::event::KeyModifiers::SUPER)
                                         {
-                                            state.settings.log_file_path.clear();
+                                            target.clear();
                                         } else if key_modifiers
                                             .contains(crossterm::event::KeyModifiers::ALT)
                                         {
-                                            delete_previous_word(&mut state.settings.log_file_path);
+                                            delete_previous_word(target);
                                         } else {
-                                            state.settings.log_file_path.pop();
+                                            target.pop();
                                         }
                                     }
                                     _ => {}
@@ -1337,8 +1381,12 @@ impl App {
                             if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                         {
                             if let Some(state) = &mut self.config_modal_state {
-                                if state.selected_setting_index == 4 {
-                                    delete_previous_word(&mut state.settings.log_file_path);
+                                match state.selected_setting_index {
+                                    4 => delete_previous_word(&mut state.settings.log_file_path),
+                                    6 => delete_previous_word(
+                                        &mut state.settings.diagnostics_log_dir,
+                                    ),
+                                    _ => {}
                                 }
                             }
                         }
@@ -1346,8 +1394,10 @@ impl App {
                             if key_modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                         {
                             if let Some(state) = &mut self.config_modal_state {
-                                if state.selected_setting_index == 4 {
-                                    state.settings.log_file_path.clear();
+                                match state.selected_setting_index {
+                                    4 => state.settings.log_file_path.clear(),
+                                    6 => state.settings.diagnostics_log_dir.clear(),
+                                    _ => {}
                                 }
                             }
                         }
@@ -1362,6 +1412,9 @@ impl App {
                                     }
                                     4 => {
                                         state.settings.log_file_path.push(c);
+                                    }
+                                    6 => {
+                                        state.settings.diagnostics_log_dir.push(c);
                                     }
                                     _ => {}
                                 }
@@ -2021,13 +2074,22 @@ impl App {
                 let provider = match self.storage_providers.get(provider_index) {
                     Some(p) => p.clone_box(),
                     None => {
+                        tracing::warn!(
+                            provider_index,
+                            "ExpandProvider dispatched with out-of-range index"
+                        );
                         self.loading_message = None;
                         return;
                     }
                 };
+                tracing::info!(
+                    provider_index,
+                    provider = %provider_name,
+                    "Dispatching ExpandProvider (list_buckets)"
+                );
                 let tx = self.event_tx.clone();
                 tokio::spawn(async move {
-                    let result = provider.list_buckets().await.map_err(|e| e.to_string());
+                    let result = provider.list_buckets().await.map_err(|e| format!("{:#}", e));
                     let _ = tx.send(AppEvent::ConnectCompleted {
                         provider_index,
                         provider_name,
@@ -2045,17 +2107,27 @@ impl App {
                 let provider = match self.storage_providers.get(provider_index) {
                     Some(p) => p.clone_box(),
                     None => {
+                        tracing::warn!(
+                            provider_index,
+                            "LoadObjects dispatched with out-of-range index"
+                        );
                         self.loading_message = None;
                         return;
                     }
                 };
+                tracing::info!(
+                    provider_index,
+                    bucket = %bucket,
+                    path = ?path,
+                    "Dispatching LoadObjects"
+                );
                 let tx = self.event_tx.clone();
                 let path_for_call = path.clone();
                 tokio::spawn(async move {
                     let result = provider
                         .list_objects(&bucket, path_for_call.as_ref())
                         .await
-                        .map_err(|e| e.to_string());
+                        .map_err(|e| format!("{:#}", e));
                     let _ = tx.send(AppEvent::ObjectsLoadCompleted {
                         path,
                         set_current_path,

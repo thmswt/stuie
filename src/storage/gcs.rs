@@ -166,6 +166,7 @@ impl GcsStorage {
 
     // -- token management ---------------------------------------------------
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name))]
     async fn get_access_token(&self) -> Result<String> {
         // Return cached token if still valid (with 60 s margin).
         {
@@ -174,10 +175,12 @@ impl GcsStorage {
                 if cached.expires_at
                     > std::time::Instant::now() + std::time::Duration::from_secs(60)
                 {
+                    tracing::debug!("GCS token cache hit");
                     return Ok(cached.access_token.clone());
                 }
             }
         }
+        tracing::info!("GCS token cache miss; fetching new access token");
 
         let token_resp = match self.credentials.as_ref() {
             GcsCredentials::ServiceAccount {
@@ -345,10 +348,12 @@ impl StorageBackend for GcsStorage {
         ProviderType::GCS
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name))]
     async fn list_buckets(&self) -> Result<Vec<Bucket>> {
         // If a specific bucket is configured, skip the API call.
         if let Some(bucket_name) = &self.config.bucket_name {
             if !bucket_name.trim().is_empty() {
+                tracing::info!(bucket = %bucket_name, "Using configured bucket; skipping GCS bucket listing");
                 return Ok(vec![Bucket {
                     name: bucket_name.clone(),
                     provider_index: self.provider_index,
@@ -438,6 +443,7 @@ impl StorageBackend for GcsStorage {
         Ok(buckets)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, prefix = ?prefix))]
     async fn list_objects(&self, bucket: &str, prefix: Option<&Path>) -> Result<Vec<Object>> {
         let store = self.create_store(bucket)?;
         let list_result = store.list_with_delimiter(prefix).await?;
@@ -471,9 +477,11 @@ impl StorageBackend for GcsStorage {
             });
         }
 
+        tracing::info!(object_count = objects.len(), "GCS list_objects complete");
         Ok(objects)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, prefix = ?prefix))]
     async fn list_objects_recursive(
         &self,
         bucket: &str,
@@ -494,9 +502,14 @@ impl StorageBackend for GcsStorage {
                 last_modified: meta.last_modified,
             });
         }
+        tracing::info!(
+            object_count = objects.len(),
+            "GCS list_objects_recursive complete"
+        );
         Ok(objects)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path, max_bytes))]
     async fn get_object_preview(
         &self,
         bucket: &str,
@@ -510,9 +523,11 @@ impl StorageBackend for GcsStorage {
         };
         let result = store.get_opts(path, options).await?;
         let bytes = result.bytes().await?;
+        tracing::debug!(byte_count = bytes.len(), "GCS preview fetched");
         Ok(bytes)
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path, local_path = %local_path.display()))]
     async fn download(
         &self,
         bucket: &str,
@@ -520,6 +535,7 @@ impl StorageBackend for GcsStorage {
         local_path: &std::path::Path,
         progress_cb: ProgressCallback,
     ) -> Result<()> {
+        tracing::info!("GCS download started");
         let store = self.create_store(bucket)?;
         let result = store.get(path).await?;
 
@@ -529,17 +545,21 @@ impl StorageBackend for GcsStorage {
 
         let mut file = tokio::fs::File::create(local_path).await?;
         let mut stream = result.into_stream();
+        let mut total_bytes: u64 = 0;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
             file.write_all(&chunk).await?;
+            total_bytes += chunk.len() as u64;
             progress_cb(chunk.len() as u64);
         }
 
         file.flush().await?;
+        tracing::info!(bytes = total_bytes, "GCS download complete");
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path, local_path = %local_path.display()))]
     async fn upload(
         &self,
         bucket: &str,
@@ -547,11 +567,13 @@ impl StorageBackend for GcsStorage {
         local_path: &std::path::Path,
         progress_cb: ProgressCallback,
     ) -> Result<()> {
+        tracing::info!("GCS upload started");
         let store = self.create_store(bucket)?;
         let mut file = tokio::fs::File::open(local_path).await?;
         let mut upload = store.put_multipart(path).await?;
 
         let mut buffer = vec![0u8; 5 * 1024 * 1024]; // 5 MB chunks
+        let mut total_bytes: u64 = 0;
         loop {
             let n = file.read(&mut buffer).await?;
             if n == 0 {
@@ -559,13 +581,16 @@ impl StorageBackend for GcsStorage {
             }
             let chunk = bytes::Bytes::copy_from_slice(&buffer[..n]);
             upload.put_part(chunk.into()).await?;
+            total_bytes += n as u64;
             progress_cb(n as u64);
         }
 
         upload.complete().await?;
+        tracing::info!(bytes = total_bytes, "GCS upload complete");
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path))]
     async fn create_folder(&self, bucket: &str, path: &Path) -> Result<()> {
         let store = self.create_store(bucket)?;
         let mut path_str = path.to_string();
@@ -577,11 +602,15 @@ impl StorageBackend for GcsStorage {
             .put(&folder_path, bytes::Bytes::new().into())
             .await
             .context("Failed to create folder in GCS")?;
+        tracing::info!("GCS create_folder complete");
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, target_count = paths.len()))]
     async fn delete_objects(&self, bucket: &str, paths: &[Path]) -> Result<()> {
+        tracing::info!("GCS delete started");
         let store = self.create_store(bucket)?;
+        let mut deleted_keys: u64 = 0;
 
         for path in paths {
             let path_str = path.to_string();
@@ -606,10 +635,12 @@ impl StorageBackend for GcsStorage {
                         .delete(&meta.location)
                         .await
                         .context("Failed to delete object in GCS")?;
+                    deleted_keys += 1;
                 }
             }
         }
 
+        tracing::info!(deleted_keys, "GCS delete complete");
         Ok(())
     }
 
