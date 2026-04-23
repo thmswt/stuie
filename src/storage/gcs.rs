@@ -62,6 +62,8 @@ struct TokenResponse {
 struct BucketListResponse {
     #[serde(default)]
     items: Vec<BucketItem>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -358,6 +360,12 @@ impl StorageBackend for GcsStorage {
         let project = self.get_project()?;
         let token = self.get_access_token().await?;
 
+        tracing::info!(
+            provider = %self.config.name,
+            project = %project,
+            "Listing GCS buckets"
+        );
+
         let resp = self
             .http_client
             .get("https://storage.googleapis.com/storage/v1/b")
@@ -367,21 +375,63 @@ impl StorageBackend for GcsStorage {
             .await
             .context("Failed to list GCS buckets")?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .context("Failed to read bucket list response body")?;
+
+        if !status.is_success() {
             bail!("GCS bucket listing failed ({}): {}", status, body);
         }
 
-        let list: BucketListResponse = resp.json().await.context("Failed to parse bucket list")?;
+        tracing::info!(
+            provider = %self.config.name,
+            project = %project,
+            status = %status,
+            body_len = body.len(),
+            "GCS bucket listing response received"
+        );
+
+        let list: BucketListResponse = serde_json::from_str(&body).with_context(|| {
+            format!(
+                "Failed to parse bucket list response (status {}, body: {})",
+                status, body
+            )
+        })?;
+
+        tracing::info!(
+            provider = %self.config.name,
+            project = %project,
+            item_count = list.items.len(),
+            has_next_page = list.next_page_token.is_some(),
+            "GCS bucket listing parsed"
+        );
+
+        if list.items.is_empty() {
+            tracing::warn!(
+                provider = %self.config.name,
+                project = %project,
+                "GCS returned an empty bucket list. Raw response body: {}",
+                body
+            );
+        }
 
         let buckets = list
             .items
             .into_iter()
-            .map(|b| Bucket {
-                name: b.name,
-                provider_index: self.provider_index,
-                location: b.location,
+            .map(|b| {
+                tracing::debug!(
+                    provider = %self.config.name,
+                    bucket = %b.name,
+                    location = ?b.location,
+                    "GCS bucket"
+                );
+                Bucket {
+                    name: b.name,
+                    provider_index: self.provider_index,
+                    location: b.location,
+                }
             })
             .collect();
 

@@ -378,43 +378,50 @@ impl App {
     pub async fn refresh_storage_providers(&mut self) {
         let mut storage_providers: Vec<Box<dyn StorageBackend>> = Vec::new();
         let mut project_backfills: Vec<(usize, String)> = Vec::new();
-        for (i, provider_config) in self.config.providers.iter().enumerate() {
+        for (config_index, provider_config) in self.config.providers.iter().enumerate() {
             if !provider_config.enabled {
                 continue;
             }
+            // provider_index must match the position in storage_providers so that
+            // bucket.provider_index aligns with sidebar_items()'s iteration index.
+            let provider_index = storage_providers.len();
             match provider_config.provider_type {
-                ProviderType::S3 => match S3Storage::new(provider_config.clone(), i).await {
-                    Ok(storage) => storage_providers.push(Box::new(storage)),
-                    Err(e) => tracing::error!(
-                        "Failed to initialize S3 provider {}: {}",
-                        provider_config.name,
-                        e
-                    ),
-                },
-                ProviderType::GCS => match GcsStorage::new(provider_config.clone(), i).await {
-                    Ok(storage) => {
-                        if provider_config
-                            .project
-                            .as_ref()
-                            .map_or(true, |p| p.trim().is_empty())
-                        {
-                            if let Some(project) = storage.detected_project_id() {
-                                project_backfills.push((i, project.to_string()));
-                            }
-                        }
-                        storage_providers.push(Box::new(storage));
+                ProviderType::S3 => {
+                    match S3Storage::new(provider_config.clone(), provider_index).await {
+                        Ok(storage) => storage_providers.push(Box::new(storage)),
+                        Err(e) => tracing::error!(
+                            "Failed to initialize S3 provider {}: {}",
+                            provider_config.name,
+                            e
+                        ),
                     }
-                    Err(e) => tracing::error!(
-                        "Failed to initialize GCS provider {}: {}",
-                        provider_config.name,
-                        e
-                    ),
-                },
+                }
+                ProviderType::GCS => {
+                    match GcsStorage::new(provider_config.clone(), provider_index).await {
+                        Ok(storage) => {
+                            if provider_config
+                                .project
+                                .as_ref()
+                                .map_or(true, |p| p.trim().is_empty())
+                            {
+                                if let Some(project) = storage.detected_project_id() {
+                                    project_backfills.push((config_index, project.to_string()));
+                                }
+                            }
+                            storage_providers.push(Box::new(storage));
+                        }
+                        Err(e) => tracing::error!(
+                            "Failed to initialize GCS provider {}: {}",
+                            provider_config.name,
+                            e
+                        ),
+                    }
+                }
                 _ => {}
             }
         }
-        for (i, project) in project_backfills {
-            self.config.providers[i].project = Some(project);
+        for (config_index, project) in project_backfills {
+            self.config.providers[config_index].project = Some(project);
         }
         self.storage_providers = storage_providers;
 
