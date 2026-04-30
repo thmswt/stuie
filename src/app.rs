@@ -2213,9 +2213,14 @@ impl App {
         let event_tx = self.event_tx.clone();
         let id = format!("create_folder_{}_{}", bucket, folder_path);
 
+        let scheme = self.storage_providers[provider_idx]
+            .provider_type()
+            .scheme();
+        let description = format!("Creating folder {}://{}/{}/", scheme, bucket, folder_path);
+
         let task = AppTask {
             id: id.clone(),
-            description: format!("Creating folder: {}", folder_name),
+            description,
             task_type: TaskType::CreateFolder,
             bytes_transferred: 0,
             total_size: 0,
