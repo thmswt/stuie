@@ -158,6 +158,14 @@ pub enum SidebarItem {
     },
 }
 
+fn sidebar_item_level(item: &SidebarItem) -> u8 {
+    match item {
+        SidebarItem::Provider(_) => 0,
+        SidebarItem::Project { .. } => 1,
+        SidebarItem::Bucket { .. } => 2,
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TaskType {
     Upload,
@@ -1516,6 +1524,11 @@ impl App {
                         self.on_back();
                     }
                 }
+                crossterm::event::KeyCode::Left => {
+                    if !self.show_config_modal && self.active_pane == Pane::Sidebar {
+                        self.jump_sidebar_to_parent();
+                    }
+                }
                 _ => {}
             },
             InputMode::Editing => {
@@ -2544,6 +2557,34 @@ impl App {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Move the sidebar cursor to the closest visible parent of the current
+    /// row: Bucket -> Project (multi-project GCS) or Provider, Project ->
+    /// Provider, Provider -> no-op. We scan backwards for the first row with
+    /// a strictly smaller indentation level, which naturally maps to the
+    /// immediate visual parent regardless of whether the tree is rendered in
+    /// two- or three-level mode.
+    fn jump_sidebar_to_parent(&mut self) {
+        let Some(index) = self.sidebar_state.selected() else {
+            return;
+        };
+        let items = self.sidebar_items();
+        let Some(current) = items.get(index) else {
+            return;
+        };
+        let current_level = sidebar_item_level(current);
+        if current_level == 0 {
+            return;
+        }
+        for i in (0..index).rev() {
+            if let Some(it) = items.get(i) {
+                if sidebar_item_level(it) < current_level {
+                    self.sidebar_state.select(Some(i));
+                    return;
                 }
             }
         }

@@ -661,6 +661,7 @@ General:
   Tab       : Switch between Sidebar and Main List
   Enter     : Enter bucket or folder
   Backspace : Go back to parent / bucket list
+  \u{2190}         : Sidebar: jump to parent (bucket -> project -> provider)
   /         : Enter Filter mode
 
 Actions:
