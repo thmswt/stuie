@@ -152,10 +152,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                             Span::raw(format!("{}", provider.name())),
                         ];
                         if ro {
-                            spans.push(Span::styled(
-                                " [RO]",
-                                Style::default().fg(theme.warning),
-                            ));
+                            spans.push(Span::styled(" [RO]", Style::default().fg(theme.warning)));
                         }
                         ListItem::new(Line::from(spans))
                             .style(Style::default().add_modifier(Modifier::BOLD))
@@ -181,11 +178,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 let is_expanded = app
                     .expanded_projects
                     .contains(&(*provider_index, project_id.clone()));
-                let expand_icon = if is_expanded {
-                    "\u{25bc}"
-                } else {
-                    "\u{25b6}"
-                };
+                let expand_icon = if is_expanded { "\u{25bc}" } else { "\u{25b6}" };
                 if show_icons {
                     ListItem::new(Line::from(vec![
                         Span::styled(" ├ ", Style::default().fg(theme.text_muted)),
@@ -212,7 +205,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 let is_last = raw_sidebar_items.get(i + 1).map_or(true, |next| {
                     matches!(
                         next,
-                        crate::app::SidebarItem::Provider(_) | crate::app::SidebarItem::Project { .. }
+                        crate::app::SidebarItem::Provider(_)
+                            | crate::app::SidebarItem::Project { .. }
                     )
                 });
                 let branch = if is_last { "└─" } else { "├─" };
@@ -942,11 +936,9 @@ fn render_project_picker(
         Paragraph::new(format!(" /{}|", picker.filter))
             .style(Style::default().fg(theme.border_active))
     } else if picker.filter.is_empty() {
-        Paragraph::new(" / to filter")
-            .style(Style::default().fg(theme.text_muted))
+        Paragraph::new(" / to filter").style(Style::default().fg(theme.text_muted))
     } else {
-        Paragraph::new(format!(" /{}", picker.filter))
-            .style(Style::default().fg(theme.text_muted))
+        Paragraph::new(format!(" /{}", picker.filter)).style(Style::default().fg(theme.text_muted))
     };
     f.render_widget(filter_para, chunks[0]);
 
@@ -977,16 +969,16 @@ fn render_project_picker(
         let visible = picker.filtered_indices();
 
         if visible.is_empty() {
-            let empty_para = Paragraph::new(format!(
-                "No projects match filter \"{}\".",
-                picker.filter
-            ))
-            .style(Style::default().fg(theme.text_muted));
+            let empty_para =
+                Paragraph::new(format!("No projects match filter \"{}\".", picker.filter))
+                    .style(Style::default().fg(theme.text_muted));
             f.render_widget(empty_para, chunks[1]);
         } else {
             // Ensure the widget's `selected` mirrors our cursor so ratatui's
             // built-in scroll follows moves past the viewport edge.
-            picker.list_state.select(Some(picker.cursor.min(visible.len() - 1)));
+            picker
+                .list_state
+                .select(Some(picker.cursor.min(visible.len() - 1)));
 
             let items: Vec<ListItem> = visible
                 .iter()
@@ -1009,14 +1001,12 @@ fn render_project_picker(
                     ]))
                 })
                 .collect();
-            let list = List::new(items)
-                .highlight_symbol("> ")
-                .highlight_style(
-                    Style::default()
-                        .fg(theme.highlight_fg)
-                        .bg(theme.highlight_bg)
-                        .add_modifier(Modifier::BOLD),
-                );
+            let list = List::new(items).highlight_symbol("> ").highlight_style(
+                Style::default()
+                    .fg(theme.highlight_fg)
+                    .bg(theme.highlight_bg)
+                    .add_modifier(Modifier::BOLD),
+            );
             f.render_stateful_widget(list, chunks[1], &mut picker.list_state);
         }
     }

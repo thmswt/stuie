@@ -300,7 +300,11 @@ fn read_only_field_default_is_false_for_every_provider_type() {
             provider_type: pt.clone(),
             ..ProviderConfig::default()
         };
-        assert!(!pc.read_only, "read_only must default to false for {:?}", pt);
+        assert!(
+            !pc.read_only,
+            "read_only must default to false for {:?}",
+            pt
+        );
     }
 }
 

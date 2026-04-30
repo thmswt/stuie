@@ -130,9 +130,7 @@ impl ProjectPickerState {
         self.projects
             .iter()
             .enumerate()
-            .filter(|(_, p)| {
-                p.id.to_lowercase().contains(&q) || p.name.to_lowercase().contains(&q)
-            })
+            .filter(|(_, p)| p.id.to_lowercase().contains(&q) || p.name.to_lowercase().contains(&q))
             .map(|(i, _)| i)
             .collect()
     }
@@ -170,10 +168,7 @@ fn sidebar_item_level(item: &SidebarItem) -> u8 {
 /// has `read_only = true`. Centralised so the wrapping happens at exactly
 /// one place — there is no other code path that pushes a backend into
 /// `storage_providers`.
-fn maybe_read_only(
-    backend: Box<dyn StorageBackend>,
-    read_only: bool,
-) -> Box<dyn StorageBackend> {
+fn maybe_read_only(backend: Box<dyn StorageBackend>, read_only: bool) -> Box<dyn StorageBackend> {
     if read_only {
         Box::new(ReadOnlyStorage::new(backend))
     } else {
@@ -602,12 +597,7 @@ impl App {
         for (config_index, project) in project_backfills {
             self.config.providers[config_index].project = Some(project);
         }
-        let disabled_count = self
-            .config
-            .providers
-            .iter()
-            .filter(|p| !p.enabled)
-            .count();
+        let disabled_count = self.config.providers.iter().filter(|p| !p.enabled).count();
         tracing::info!(
             initialized = storage_providers.len(),
             disabled = disabled_count,
@@ -770,8 +760,8 @@ impl App {
                             // multi-project trees Project rows start collapsed
                             // so no Bucket row is visible yet — fall back to
                             // the first Project row instead.
-                            let first_child = items.iter().enumerate().find_map(|(idx, item)| {
-                                match item {
+                            let first_child =
+                                items.iter().enumerate().find_map(|(idx, item)| match item {
                                     SidebarItem::Bucket {
                                         provider_index: pi,
                                         name,
@@ -780,12 +770,9 @@ impl App {
                                     SidebarItem::Project {
                                         provider_index: pi,
                                         project_id,
-                                    } if *pi == provider_index => {
-                                        Some((idx, project_id.clone()))
-                                    }
+                                    } if *pi == provider_index => Some((idx, project_id.clone())),
                                     _ => None,
-                                }
-                            });
+                                });
 
                             if let Some((item_idx, _)) = first_child {
                                 // Move the cursor to the first child for
@@ -875,8 +862,7 @@ impl App {
                                         picker.projects = projects;
                                         picker.error = None;
                                         if picker.cursor >= picker.projects.len() {
-                                            picker.cursor =
-                                                picker.projects.len().saturating_sub(1);
+                                            picker.cursor = picker.projects.len().saturating_sub(1);
                                         }
                                     }
                                     Err(e) => {
@@ -1730,16 +1716,16 @@ impl App {
                         }
                         crossterm::event::KeyCode::Tab | crossterm::event::KeyCode::Down => {
                             if let Some(state) = &mut self.config_modal_state {
-                                let count = state.providers[state.selected_provider_index]
-                                    .field_count();
+                                let count =
+                                    state.providers[state.selected_provider_index].field_count();
                                 state.selected_field_index =
                                     (state.selected_field_index + 1) % count;
                             }
                         }
                         crossterm::event::KeyCode::BackTab | crossterm::event::KeyCode::Up => {
                             if let Some(state) = &mut self.config_modal_state {
-                                let count = state.providers[state.selected_provider_index]
-                                    .field_count();
+                                let count =
+                                    state.providers[state.selected_provider_index].field_count();
                                 if state.selected_field_index == 0 {
                                     state.selected_field_index = count - 1;
                                 } else {
@@ -2489,8 +2475,7 @@ impl App {
                         match item {
                             SidebarItem::Provider(p_idx) => {
                                 let p_idx = *p_idx;
-                                let is_multi_project =
-                                    self.multi_project_projects(p_idx).is_some();
+                                let is_multi_project = self.multi_project_projects(p_idx).is_some();
                                 if self.expanded_providers.contains(&p_idx) {
                                     self.expanded_providers.remove(&p_idx);
                                 } else if is_multi_project {
@@ -2707,7 +2692,10 @@ impl App {
                 );
                 let tx = self.event_tx.clone();
                 tokio::spawn(async move {
-                    let result = provider.list_buckets().await.map_err(|e| format!("{:#}", e));
+                    let result = provider
+                        .list_buckets()
+                        .await
+                        .map_err(|e| format!("{:#}", e));
                     let _ = tx.send(AppEvent::ConnectCompleted {
                         provider_index,
                         provider_name,
@@ -2803,7 +2791,10 @@ impl App {
                         let storage = GcsStorage::new(provider_config, 0)
                             .await
                             .map_err(|e| format!("{:#}", e))?;
-                        storage.list_projects().await.map_err(|e| format!("{:#}", e))
+                        storage
+                            .list_projects()
+                            .await
+                            .map_err(|e| format!("{:#}", e))
                     }
                     .await;
                     let _ = tx.send(AppEvent::ProjectsLoaded {

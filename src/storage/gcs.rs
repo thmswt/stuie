@@ -152,9 +152,7 @@ impl std::fmt::Debug for ScopedTokenProvider {
 impl object_store::CredentialProvider for ScopedTokenProvider {
     type Credential = object_store::gcp::GcpCredential;
 
-    async fn get_credential(
-        &self,
-    ) -> object_store::Result<Arc<object_store::gcp::GcpCredential>> {
+    async fn get_credential(&self) -> object_store::Result<Arc<object_store::gcp::GcpCredential>> {
         let bearer =
             self.storage
                 .get_access_token()
@@ -234,13 +232,11 @@ impl GcsStorage {
         };
 
         let resolved_path = resolved_path.with_context(|| match config.gcs_auth_mode {
-            GcsAuthMode::GcloudAdc => {
-                "No Application Default Credentials found. Run \
+            GcsAuthMode::GcloudAdc => "No Application Default Credentials found. Run \
                  'gcloud auth application-default login \
                  --scopes=https://www.googleapis.com/auth/cloud-platform.read-only' \
                  then reopen this provider."
-                    .to_string()
-            }
+                .to_string(),
             GcsAuthMode::ServiceAccount => "No GCS credentials found. Provide a Credentials Path \
                  in the provider config, set the GOOGLE_APPLICATION_CREDENTIALS env var, or run \
                  'gcloud auth application-default login'."
@@ -469,12 +465,7 @@ impl GcsStorage {
     /// is preserved verbatim (including any trailing `/`) so we can target
     /// folder-marker keys that `object_store::path::Path` would otherwise
     /// strip.
-    async fn gcs_delete_object(
-        &self,
-        token: &str,
-        bucket: &str,
-        object_name: &str,
-    ) -> Result<()> {
+    async fn gcs_delete_object(&self, token: &str, bucket: &str, object_name: &str) -> Result<()> {
         let url = format!(
             "https://storage.googleapis.com/storage/v1/b/{}/o/{}",
             bucket,
@@ -952,9 +943,7 @@ impl StorageBackend for GcsStorage {
             } else {
                 format!("{}/", path_str)
             };
-            let _ = self
-                .gcs_delete_object(&token, bucket, &folder_marker)
-                .await;
+            let _ = self.gcs_delete_object(&token, bucket, &folder_marker).await;
 
             // 2. Recursively delete everything under the prefix.
             let mut page_token: Option<String> = None;
@@ -967,8 +956,7 @@ impl StorageBackend for GcsStorage {
                     query.push(("pageToken", t.clone()));
                 }
 
-                let url =
-                    format!("https://storage.googleapis.com/storage/v1/b/{}/o", bucket);
+                let url = format!("https://storage.googleapis.com/storage/v1/b/{}/o", bucket);
                 let resp = self
                     .http_client
                     .get(&url)
@@ -988,13 +976,12 @@ impl StorageBackend for GcsStorage {
                     bail!("GCS list for deletion failed ({}): {}", status, body);
                 }
 
-                let list: ObjectListResponse =
-                    serde_json::from_str(&body).with_context(|| {
-                        format!(
-                            "Failed to parse object list response (status {}, body: {})",
-                            status, body
-                        )
-                    })?;
+                let list: ObjectListResponse = serde_json::from_str(&body).with_context(|| {
+                    format!(
+                        "Failed to parse object list response (status {}, body: {})",
+                        status, body
+                    )
+                })?;
 
                 for item in list.items {
                     self.gcs_delete_object(&token, bucket, &item.name)

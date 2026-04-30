@@ -130,19 +130,10 @@ fn wrap_readonly() -> (Box<dyn StorageBackend>, Arc<FakeBackend>) {
         async fn list_objects(&self, b: &str, p: Option<&Path>) -> Result<Vec<Object>> {
             self.0.list_objects(b, p).await
         }
-        async fn list_objects_recursive(
-            &self,
-            b: &str,
-            p: Option<&Path>,
-        ) -> Result<Vec<Object>> {
+        async fn list_objects_recursive(&self, b: &str, p: Option<&Path>) -> Result<Vec<Object>> {
             self.0.list_objects_recursive(b, p).await
         }
-        async fn get_object_preview(
-            &self,
-            b: &str,
-            p: &Path,
-            m: usize,
-        ) -> Result<bytes::Bytes> {
+        async fn get_object_preview(&self, b: &str, p: &Path, m: usize) -> Result<bytes::Bytes> {
             self.0.get_object_preview(b, p, m).await
         }
         async fn download(
@@ -289,7 +280,10 @@ async fn read_only_wrapper_clone_box_preserves_read_only_flag() {
         .delete_objects("fake-bucket", &[Path::from("foo")])
         .await
         .expect_err("clone must also block writes");
-    assert!(err.to_string().contains(ReadOnlyStorage::BLOCKED_MESSAGE_PREFIX));
+    assert!(
+        err.to_string()
+            .contains(ReadOnlyStorage::BLOCKED_MESSAGE_PREFIX)
+    );
 }
 
 #[tokio::test]

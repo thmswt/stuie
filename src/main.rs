@@ -93,9 +93,7 @@ fn print_quit_screen(app: &App) {
 
     // Print Session Tasks
     if app.session_tasks.is_empty() {
-        println!(
-            "You did absolutely nothing this session. Zero tasks, zero worries! 🧘"
-        );
+        println!("You did absolutely nothing this session. Zero tasks, zero worries! 🧘");
     } else {
         let log_to_file = app.config.settings.log_to_file;
         let total = app.session_tasks.len();

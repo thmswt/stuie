@@ -6,8 +6,7 @@ use stuie::storage::gcs::{
 fn service_account_scope_is_read_only_when_flag_set() {
     let scope = service_account_scope(true);
     assert_eq!(
-        scope,
-        "https://www.googleapis.com/auth/devstorage.read_only",
+        scope, "https://www.googleapis.com/auth/devstorage.read_only",
         "RO mode must request the devstorage.read_only scope so GCS itself rejects writes"
     );
 }
@@ -16,8 +15,7 @@ fn service_account_scope_is_read_only_when_flag_set() {
 fn service_account_scope_is_cloud_platform_when_flag_unset() {
     let scope = service_account_scope(false);
     assert_eq!(
-        scope,
-        "https://www.googleapis.com/auth/cloud-platform",
+        scope, "https://www.googleapis.com/auth/cloud-platform",
         "Default scope must remain cloud-platform to preserve existing read+write behaviour"
     );
 }
