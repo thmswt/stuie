@@ -90,15 +90,71 @@ pub struct ConfigModalState {
     // Theme tab
     pub selected_theme_index: usize,
     pub original_theme: String,
+    // GCS project picker (open when `Some`)
+    pub project_picker: Option<ProjectPickerState>,
+}
+
+#[derive(Clone)]
+pub struct ProjectPickerState {
+    /// Index into `ConfigModalState::providers` that we're picking for.
+    pub provider_config_index: usize,
+    /// `true` while the async list_projects call is in flight.
+    pub loading: bool,
+    /// Set if the list call errored out; `None` on success or while loading.
+    pub error: Option<String>,
+    /// Projects returned by the API, ordered by project ID.
+    pub projects: Vec<crate::storage::GcpProject>,
+    /// Project IDs currently marked as selected.
+    pub checked: HashSet<String>,
+    /// Cursor position — an index into the *filtered* view.
+    pub cursor: usize,
+    /// Widget-side scroll/selection state. Must persist across frames so the
+    /// list view follows the cursor when it moves past the visible window.
+    pub list_state: ListState,
+    /// Substring filter applied to the list. Empty = no filter.
+    pub filter: String,
+    /// If true, key presses append to `filter` instead of navigating.
+    /// Activated by `/`; cleared by Enter or Esc.
+    pub filter_active: bool,
+}
+
+impl ProjectPickerState {
+    /// Indices into `self.projects` that match the current filter, in
+    /// original (sorted) order. Matches against project id or display name,
+    /// case-insensitively.
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        if self.filter.is_empty() {
+            return (0..self.projects.len()).collect();
+        }
+        let q = self.filter.to_lowercase();
+        self.projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                p.id.to_lowercase().contains(&q) || p.name.to_lowercase().contains(&q)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 #[derive(Clone)]
 pub enum SidebarItem {
     Provider(usize),
+    /// Multi-project GCS (GcloudAdc mode): one row per selected GCP project.
+    /// Only emitted when the parent Provider is expanded AND
+    /// `oauth_projects.len() >= 2`.
+    Project {
+        provider_index: usize,
+        project_id: String,
+    },
     Bucket {
         provider_index: usize,
         name: String,
         location: Option<String>,
+        /// Populated only for GCS buckets listed under a specific project
+        /// (GcloudAdc multi-project mode). `None` for single-project buckets.
+        project_id: Option<String>,
     },
 }
 
@@ -190,6 +246,15 @@ pub enum AppEvent {
         highlight_path: Option<ObjectPath>,
         result: Result<Vec<Object>, String>,
     },
+    ProjectsLoaded {
+        provider_config_index: usize,
+        result: Result<Vec<crate::storage::GcpProject>, String>,
+    },
+    ProjectExpandCompleted {
+        provider_index: usize,
+        project_id: String,
+        result: Result<Vec<Bucket>, String>,
+    },
 }
 
 pub enum PendingAction {
@@ -203,6 +268,14 @@ pub enum PendingAction {
         path: Option<ObjectPath>,
         set_current_path: bool,
         highlight_path: Option<ObjectPath>,
+    },
+    FetchProjects {
+        provider_config_index: usize,
+        provider_config: ProviderConfig,
+    },
+    ExpandProject {
+        provider_index: usize,
+        project_id: String,
     },
 }
 
@@ -226,7 +299,16 @@ pub struct App {
     pub main_list_state: TableState,
     pub all_buckets: Vec<Bucket>,
     pub expanded_providers: HashSet<usize>,
+    /// For multi-project GCS providers: which (provider_index, project_id)
+    /// sub-trees are expanded. Only consulted when the tree shows the
+    /// three-level layout (Provider > Project > Bucket).
+    pub expanded_projects: HashSet<(usize, String)>,
     pub activated_providers: HashSet<usize>,
+    /// Per-project activation in multi-project mode: a pair is inserted the
+    /// first time the user presses Enter on its Project row and the bucket
+    /// fetch completes successfully. Used to skip re-fetching when toggling
+    /// the Project row's expand state.
+    pub activated_projects: HashSet<(usize, String)>,
     pub objects: Vec<Object>,
     pub selected_paths: HashSet<object_store::path::Path>,
     pub current_bucket: Option<String>,
@@ -303,7 +385,9 @@ impl App {
             main_list_state: TableState::default(),
             all_buckets: Vec::new(),
             expanded_providers: HashSet::new(),
+            expanded_projects: HashSet::new(),
             activated_providers: HashSet::new(),
+            activated_projects: HashSet::new(),
             objects: Vec::new(),
             selected_paths: HashSet::new(),
             current_bucket: None,
@@ -360,19 +444,85 @@ impl App {
         let mut items = Vec::new();
         for i in 0..self.storage_providers.len() {
             items.push(SidebarItem::Provider(i));
-            if self.expanded_providers.contains(&i) {
+            if !self.expanded_providers.contains(&i) {
+                continue;
+            }
+
+            // Does this provider show the three-level layout?
+            // Only GCS in GcloudAdc mode with >=2 configured projects qualifies.
+            let three_level_projects: Option<Vec<String>> = self.multi_project_projects(i);
+
+            if let Some(project_ids) = three_level_projects {
+                for project_id in &project_ids {
+                    items.push(SidebarItem::Project {
+                        provider_index: i,
+                        project_id: project_id.clone(),
+                    });
+                    let key = (i, project_id.clone());
+                    if self.expanded_projects.contains(&key) {
+                        for bucket in &self.all_buckets {
+                            if bucket.provider_index == i
+                                && bucket.project_id.as_deref() == Some(project_id.as_str())
+                            {
+                                items.push(SidebarItem::Bucket {
+                                    provider_index: i,
+                                    name: bucket.name.clone(),
+                                    location: bucket.location.clone(),
+                                    project_id: Some(project_id.clone()),
+                                });
+                            }
+                        }
+                    }
+                }
+            } else {
                 for bucket in &self.all_buckets {
                     if bucket.provider_index == i {
                         items.push(SidebarItem::Bucket {
                             provider_index: i,
                             name: bucket.name.clone(),
                             location: bucket.location.clone(),
+                            project_id: bucket.project_id.clone(),
                         });
                     }
                 }
             }
         }
         items
+    }
+
+    /// If the provider at `provider_index` is a multi-project GCS provider
+    /// (GcloudAdc mode with 2+ selected projects), return the project IDs in
+    /// the configured order. Otherwise return `None`, signaling the
+    /// sidebar should render the two-level (Provider > Bucket) layout.
+    fn multi_project_projects(&self, provider_index: usize) -> Option<Vec<String>> {
+        // Find the ProviderConfig that corresponds to this runtime index. The
+        // runtime `storage_providers` vector only contains *enabled* providers
+        // (see refresh_storage_providers), so we can't use it as a direct
+        // index into `self.config.providers`. Match on name instead.
+        let storage = self.storage_providers.get(provider_index)?;
+        let name = storage.name();
+        let provider_config = self
+            .config
+            .providers
+            .iter()
+            .find(|p| p.enabled && p.name == name)?;
+
+        if provider_config.provider_type != crate::config::ProviderType::GCS {
+            return None;
+        }
+        if provider_config.gcs_auth_mode != crate::config::GcsAuthMode::GcloudAdc {
+            return None;
+        }
+        let projects: Vec<String> = provider_config
+            .oauth_projects
+            .iter()
+            .filter(|p| !p.trim().is_empty())
+            .cloned()
+            .collect();
+        if projects.len() < 2 {
+            return None;
+        }
+        Some(projects)
     }
 
     pub async fn refresh_storage_providers(&mut self) {
@@ -446,7 +596,9 @@ impl App {
         // prior provider list don't render against the rebuilt positions.
         self.all_buckets.clear();
         self.activated_providers.clear();
+        self.activated_projects.clear();
         self.expanded_providers.clear();
+        self.expanded_projects.clear();
 
         // Reset sidebar state if needed
         if self.sidebar_state.selected().is_none() && !self.sidebar_items().is_empty() {
@@ -563,24 +715,31 @@ impl App {
                             self.expanded_providers.insert(provider_index);
 
                             let items = self.sidebar_items();
-                            let first_bucket = items.iter().enumerate().find_map(|(idx, item)| {
-                                if let SidebarItem::Bucket {
-                                    provider_index: pi,
-                                    name,
-                                    ..
-                                } = item
-                                {
-                                    if *pi == provider_index {
-                                        return Some((idx, name.clone()));
+                            // Prefer first Bucket row under this provider. For
+                            // multi-project trees Project rows start collapsed
+                            // so no Bucket row is visible yet — fall back to
+                            // the first Project row instead.
+                            let first_child = items.iter().enumerate().find_map(|(idx, item)| {
+                                match item {
+                                    SidebarItem::Bucket {
+                                        provider_index: pi,
+                                        name,
+                                        ..
+                                    } if *pi == provider_index => Some((idx, name.clone())),
+                                    SidebarItem::Project {
+                                        provider_index: pi,
+                                        project_id,
+                                    } if *pi == provider_index => {
+                                        Some((idx, project_id.clone()))
                                     }
+                                    _ => None,
                                 }
-                                None
                             });
 
-                            if let Some((item_idx, _)) = first_bucket {
-                                // Move the cursor to the first bucket for convenience,
-                                // but don't fetch objects — that happens when the user
-                                // presses Enter on the bucket row.
+                            if let Some((item_idx, _)) = first_child {
+                                // Move the cursor to the first child for
+                                // convenience. Objects are fetched only when
+                                // the user presses Enter on a bucket row.
                                 self.sidebar_state.select(Some(item_idx));
                                 self.save_message =
                                     Some(format!("Connected to '{}'", provider_name));
@@ -601,6 +760,79 @@ impl App {
                                 provider_name, e
                             ));
                             self.loading_message = None;
+                        }
+                    }
+                }
+                AppEvent::ProjectExpandCompleted {
+                    provider_index,
+                    project_id,
+                    result,
+                } => {
+                    match result {
+                        Ok(buckets) => {
+                            // Replace any cached buckets for this project
+                            // (handles re-fetch after the config changes).
+                            self.all_buckets.retain(|b| {
+                                !(b.provider_index == provider_index
+                                    && b.project_id.as_deref() == Some(project_id.as_str()))
+                            });
+                            self.all_buckets.extend(buckets);
+                            self.activated_projects
+                                .insert((provider_index, project_id.clone()));
+                            self.expanded_projects
+                                .insert((provider_index, project_id.clone()));
+
+                            // Move cursor to first bucket under this project
+                            // for convenience.
+                            let items = self.sidebar_items();
+                            if let Some((item_idx, _)) =
+                                items.iter().enumerate().find(|(_, item)| match item {
+                                    SidebarItem::Bucket {
+                                        provider_index: pi,
+                                        project_id: pid,
+                                        ..
+                                    } => {
+                                        *pi == provider_index
+                                            && pid.as_deref() == Some(project_id.as_str())
+                                    }
+                                    _ => false,
+                                })
+                            {
+                                self.sidebar_state.select(Some(item_idx));
+                            }
+                        }
+                        Err(e) => {
+                            self.set_error(format!(
+                                "Failed to list buckets for project '{}': {}",
+                                project_id, e
+                            ));
+                        }
+                    }
+                    self.loading_message = None;
+                }
+                AppEvent::ProjectsLoaded {
+                    provider_config_index,
+                    result,
+                } => {
+                    if let Some(state) = &mut self.config_modal_state {
+                        if let Some(picker) = &mut state.project_picker {
+                            if picker.provider_config_index == provider_config_index {
+                                picker.loading = false;
+                                match result {
+                                    Ok(mut projects) => {
+                                        projects.sort_by(|a, b| a.id.cmp(&b.id));
+                                        picker.projects = projects;
+                                        picker.error = None;
+                                        if picker.cursor >= picker.projects.len() {
+                                            picker.cursor =
+                                                picker.projects.len().saturating_sub(1);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        picker.error = Some(e);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -924,6 +1156,18 @@ impl App {
             }
         }
 
+        // When the GCS project picker modal is open, it grabs all keyboard
+        // input ahead of the regular config modal handling — regardless of
+        // whether we opened it from Normal or Editing mode.
+        if self.show_config_modal {
+            if let Some(state) = &self.config_modal_state {
+                if state.project_picker.is_some() {
+                    self.handle_project_picker_key(key_code);
+                    return;
+                }
+            }
+        }
+
         match self.input_mode {
             InputMode::Normal => match key_code {
                 crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
@@ -1029,6 +1273,7 @@ impl App {
                             selected_setting_index: 0,
                             selected_theme_index: crate::theme::theme_index(&self.config.theme),
                             original_theme: self.config.theme.clone(),
+                            project_picker: None,
                         });
                         if self
                             .config_modal_state
@@ -1418,7 +1663,6 @@ impl App {
                         crossterm::event::KeyCode::Tab | crossterm::event::KeyCode::Down => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let count = state.providers[state.selected_provider_index]
-                                    .provider_type
                                     .field_count();
                                 state.selected_field_index =
                                     (state.selected_field_index + 1) % count;
@@ -1427,7 +1671,6 @@ impl App {
                         crossterm::event::KeyCode::BackTab | crossterm::event::KeyCode::Up => {
                             if let Some(state) = &mut self.config_modal_state {
                                 let count = state.providers[state.selected_provider_index]
-                                    .provider_type
                                     .field_count();
                                 if state.selected_field_index == 0 {
                                     state.selected_field_index = count - 1;
@@ -1445,11 +1688,23 @@ impl App {
                                         ProviderType::GCS => ProviderType::Azure,
                                         ProviderType::Azure => ProviderType::S3,
                                     };
+                                    clamp_selected_field_index(state);
                                 } else if provider.is_cycle_field(state.selected_field_index) {
                                     match (&provider.provider_type, state.selected_field_index) {
                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
                                             provider.allow_http =
                                                 Some(!provider.allow_http.unwrap_or(false));
+                                        }
+                                        (ProviderType::GCS, 2) => {
+                                            provider.gcs_auth_mode = match provider.gcs_auth_mode {
+                                                crate::config::GcsAuthMode::ServiceAccount => {
+                                                    crate::config::GcsAuthMode::GcloudAdc
+                                                }
+                                                crate::config::GcsAuthMode::GcloudAdc => {
+                                                    crate::config::GcsAuthMode::ServiceAccount
+                                                }
+                                            };
+                                            clamp_selected_field_index(state);
                                         }
                                         _ => {}
                                     }
@@ -1465,11 +1720,23 @@ impl App {
                                         ProviderType::GCS => ProviderType::S3,
                                         ProviderType::Azure => ProviderType::GCS,
                                     };
+                                    clamp_selected_field_index(state);
                                 } else if provider.is_cycle_field(state.selected_field_index) {
                                     match (&provider.provider_type, state.selected_field_index) {
                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
                                             provider.allow_http =
                                                 Some(!provider.allow_http.unwrap_or(false));
+                                        }
+                                        (ProviderType::GCS, 2) => {
+                                            provider.gcs_auth_mode = match provider.gcs_auth_mode {
+                                                crate::config::GcsAuthMode::ServiceAccount => {
+                                                    crate::config::GcsAuthMode::GcloudAdc
+                                                }
+                                                crate::config::GcsAuthMode::GcloudAdc => {
+                                                    crate::config::GcsAuthMode::ServiceAccount
+                                                }
+                                            };
+                                            clamp_selected_field_index(state);
                                         }
                                         _ => {}
                                     }
@@ -1477,9 +1744,50 @@ impl App {
                             }
                         }
                         crossterm::event::KeyCode::Enter => {
-                            self.input_mode = InputMode::Normal;
-                            if let Some(state) = &mut self.config_modal_state {
-                                state.edit_mode = false;
+                            // Enter on the GCS+GcloudAdc "Selected Projects"
+                            // action field opens the project picker directly.
+                            // Otherwise it behaves as before — exit editing.
+                            let on_action_field = self
+                                .config_modal_state
+                                .as_ref()
+                                .and_then(|s| {
+                                    s.providers.get(s.selected_provider_index).map(|p| {
+                                        p.is_action_field(s.selected_field_index)
+                                            && s.selected_field_index == 4
+                                    })
+                                })
+                                .unwrap_or(false);
+                            if on_action_field {
+                                self.try_open_project_picker();
+                            } else {
+                                self.input_mode = InputMode::Normal;
+                                if let Some(state) = &mut self.config_modal_state {
+                                    state.edit_mode = false;
+                                }
+                            }
+                        }
+                        // Capital P from Edit Mode: shortcut to open the GCS
+                        // project picker, but only when the cursor is on the
+                        // "Selected Projects" action field — any other field
+                        // is free-text, where the user might actually want to
+                        // type a 'P'.
+                        crossterm::event::KeyCode::Char('P') => {
+                            let on_action_field = self
+                                .config_modal_state
+                                .as_ref()
+                                .and_then(|s| {
+                                    s.providers.get(s.selected_provider_index).map(|p| {
+                                        p.is_action_field(s.selected_field_index)
+                                            && s.selected_field_index == 4
+                                    })
+                                })
+                                .unwrap_or(false);
+                            if on_action_field {
+                                self.try_open_project_picker();
+                            } else if let Some(state) = &mut self.config_modal_state {
+                                if let Some(field) = get_editing_field_mut(state) {
+                                    field.push('P');
+                                }
                             }
                         }
                         crossterm::event::KeyCode::Backspace => {
@@ -1916,6 +2224,185 @@ impl App {
         self.selected_paths.clear();
     }
 
+    fn handle_project_picker_key(&mut self, key_code: crossterm::event::KeyCode) {
+        use crossterm::event::KeyCode;
+        let state = match self.config_modal_state.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+        let picker = match state.project_picker.as_mut() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // When the filter input is focused, keys go into the filter string
+        // instead of navigating the list.
+        if picker.filter_active {
+            match key_code {
+                KeyCode::Esc => {
+                    // Esc from filter input clears the filter entirely.
+                    picker.filter.clear();
+                    picker.filter_active = false;
+                }
+                KeyCode::Enter => {
+                    // Enter commits the current filter and returns focus to
+                    // the list.
+                    picker.filter_active = false;
+                }
+                KeyCode::Backspace => {
+                    picker.filter.pop();
+                }
+                KeyCode::Char(c) => {
+                    picker.filter.push(c);
+                }
+                _ => {}
+            }
+            // After any filter change, clamp the cursor to the new filtered
+            // length and sync the widget state.
+            let visible = picker.filtered_indices().len();
+            if visible == 0 {
+                picker.cursor = 0;
+                picker.list_state.select(None);
+            } else {
+                if picker.cursor >= visible {
+                    picker.cursor = visible - 1;
+                }
+                picker.list_state.select(Some(picker.cursor));
+            }
+            return;
+        }
+
+        let visible = picker.filtered_indices();
+
+        match key_code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.project_picker = None;
+                return;
+            }
+            KeyCode::Char('/') => {
+                picker.filter_active = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !visible.is_empty() && picker.cursor + 1 < visible.len() {
+                    picker.cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if picker.cursor > 0 {
+                    picker.cursor -= 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(&project_idx) = visible.get(picker.cursor) {
+                    if let Some(project) = picker.projects.get(project_idx) {
+                        if picker.checked.contains(&project.id) {
+                            picker.checked.remove(&project.id);
+                        } else {
+                            picker.checked.insert(project.id.clone());
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('a') => {
+                // Filter-aware: "select all" only affects the visible subset.
+                for &project_idx in &visible {
+                    if let Some(project) = picker.projects.get(project_idx) {
+                        picker.checked.insert(project.id.clone());
+                    }
+                }
+            }
+            KeyCode::Char('n') => {
+                // Filter-aware: "select none" only clears the visible subset,
+                // leaving selections in hidden (non-matching) projects alone.
+                for &project_idx in &visible {
+                    if let Some(project) = picker.projects.get(project_idx) {
+                        picker.checked.remove(&project.id);
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Save: write the checked set back to the provider config
+                // as a deterministic, sorted list. Then close the picker.
+                let idx = picker.provider_config_index;
+                let mut selected: Vec<String> = picker.checked.iter().cloned().collect();
+                selected.sort();
+                if let Some(provider) = state.providers.get_mut(idx) {
+                    provider.oauth_projects = selected;
+                }
+                state.project_picker = None;
+                return;
+            }
+            _ => {}
+        }
+
+        // Keep widget-side scroll state in sync so the list view follows the
+        // cursor even when it moves past the visible window.
+        if visible.is_empty() {
+            picker.list_state.select(None);
+        } else {
+            if picker.cursor >= visible.len() {
+                picker.cursor = visible.len() - 1;
+            }
+            picker.list_state.select(Some(picker.cursor));
+        }
+    }
+
+    /// Open the GCS project picker for the currently selected provider in the
+    /// Providers tab. No-op outside that tab. Surfaces a clear error when the
+    /// selected provider isn't a GCS+GcloudAdc provider.
+    ///
+    /// Callable from both Normal and Editing input modes — in Editing mode it
+    /// also drops back to Normal so the picker's key handler owns the input.
+    fn try_open_project_picker(&mut self) {
+        let state = match self.config_modal_state.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
+        if state.active_tab != ConfigTab::Providers {
+            return;
+        }
+        let provider = match state.providers.get(state.selected_provider_index).cloned() {
+            Some(p) => p,
+            None => return,
+        };
+        let idx = state.selected_provider_index;
+
+        if provider.provider_type != ProviderType::GCS {
+            self.set_error("Project picker is GCS-only.".to_string());
+            return;
+        }
+        if provider.gcs_auth_mode != crate::config::GcsAuthMode::GcloudAdc {
+            self.set_error(
+                "Project picker requires GCS auth mode 'gcloud ADC'. \
+                 Cycle the Auth Mode field with \u{2190}/\u{2192} first."
+                    .to_string(),
+            );
+            return;
+        }
+
+        let checked: HashSet<String> = provider.oauth_projects.iter().cloned().collect();
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        state.project_picker = Some(ProjectPickerState {
+            provider_config_index: idx,
+            loading: true,
+            error: None,
+            projects: Vec::new(),
+            checked,
+            cursor: 0,
+            list_state,
+            filter: String::new(),
+            filter_active: false,
+        });
+        // Drop any in-progress field edit — the picker owns input now.
+        state.edit_mode = false;
+        self.input_mode = InputMode::Normal;
+        self.pending_action = Some(PendingAction::FetchProjects {
+            provider_config_index: idx,
+            provider_config: provider,
+        });
+    }
+
     fn on_enter(&mut self) {
         match self.active_pane {
             Pane::Sidebar => {
@@ -1925,18 +2412,44 @@ impl App {
                         match item {
                             SidebarItem::Provider(p_idx) => {
                                 let p_idx = *p_idx;
+                                let is_multi_project =
+                                    self.multi_project_projects(p_idx).is_some();
                                 if self.expanded_providers.contains(&p_idx) {
                                     self.expanded_providers.remove(&p_idx);
+                                } else if is_multi_project {
+                                    // Multi-project GCS: expanding the provider
+                                    // is a cheap local operation — it only
+                                    // reveals Project rows. Buckets are fetched
+                                    // when the user presses Enter on a Project
+                                    // row (see below).
+                                    self.expanded_providers.insert(p_idx);
+                                    self.activated_providers.insert(p_idx);
+                                    let items = self.sidebar_items();
+                                    if let Some((item_idx, _)) =
+                                        items.iter().enumerate().find(|(_, item)| match item {
+                                            SidebarItem::Project { provider_index, .. } => {
+                                                *provider_index == p_idx
+                                            }
+                                            _ => false,
+                                        })
+                                    {
+                                        self.sidebar_state.select(Some(item_idx));
+                                    }
                                 } else if self.activated_providers.contains(&p_idx) {
                                     // Already connected — expand using cached buckets.
                                     // Move the cursor onto the first bucket for convenience;
                                     // objects are fetched only when the user presses Enter
-                                    // on the bucket row.
+                                    // on a Bucket row.
                                     self.expanded_providers.insert(p_idx);
                                     let items = self.sidebar_items();
-                                    if let Some((item_idx, _)) = items.iter().enumerate().find(
-                                        |(_, item)| matches!(item, SidebarItem::Bucket { provider_index, .. } if *provider_index == p_idx),
-                                    ) {
+                                    if let Some((item_idx, _)) =
+                                        items.iter().enumerate().find(|(_, item)| match item {
+                                            SidebarItem::Bucket { provider_index, .. } => {
+                                                *provider_index == p_idx
+                                            }
+                                            _ => false,
+                                        })
+                                    {
                                         self.sidebar_state.select(Some(item_idx));
                                     }
                                 } else {
@@ -1951,6 +2464,32 @@ impl App {
                                     self.pending_action = Some(PendingAction::ExpandProvider {
                                         provider_index: p_idx,
                                         provider_name,
+                                    });
+                                }
+                            }
+                            SidebarItem::Project {
+                                provider_index,
+                                project_id,
+                            } => {
+                                let provider_index = *provider_index;
+                                let project_id = project_id.clone();
+                                let key = (provider_index, project_id.clone());
+                                if self.expanded_projects.contains(&key) {
+                                    self.expanded_projects.remove(&key);
+                                } else if self.activated_projects.contains(&key) {
+                                    // Buckets for this project are already
+                                    // cached — just expand locally.
+                                    self.expanded_projects.insert(key);
+                                } else {
+                                    // First time: schedule a per-project
+                                    // bucket fetch.
+                                    self.loading_message = Some(format!(
+                                        "Loading buckets for project '{}'...",
+                                        project_id
+                                    ));
+                                    self.pending_action = Some(PendingAction::ExpandProject {
+                                        provider_index,
+                                        project_id,
                                     });
                                 }
                             }
@@ -2106,6 +2645,64 @@ impl App {
                         path,
                         set_current_path,
                         highlight_path,
+                        result,
+                    });
+                });
+            }
+            PendingAction::ExpandProject {
+                provider_index,
+                project_id,
+            } => {
+                let provider = match self.storage_providers.get(provider_index) {
+                    Some(p) => p.clone_box(),
+                    None => {
+                        tracing::warn!(
+                            provider_index,
+                            "ExpandProject dispatched with out-of-range index"
+                        );
+                        self.loading_message = None;
+                        return;
+                    }
+                };
+                tracing::info!(
+                    provider_index,
+                    project = %project_id,
+                    "Dispatching ExpandProject (list_buckets_for_project)"
+                );
+                let tx = self.event_tx.clone();
+                let project_id_for_call = project_id.clone();
+                tokio::spawn(async move {
+                    let result = provider
+                        .list_buckets_for_project(&project_id_for_call)
+                        .await
+                        .map_err(|e| format!("{:#}", e));
+                    let _ = tx.send(AppEvent::ProjectExpandCompleted {
+                        provider_index,
+                        project_id,
+                        result,
+                    });
+                });
+            }
+            PendingAction::FetchProjects {
+                provider_config_index,
+                provider_config,
+            } => {
+                tracing::info!(
+                    provider_config_index,
+                    provider = %provider_config.name,
+                    "Dispatching FetchProjects"
+                );
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    let result = async {
+                        let storage = GcsStorage::new(provider_config, 0)
+                            .await
+                            .map_err(|e| format!("{:#}", e))?;
+                        storage.list_projects().await.map_err(|e| format!("{:#}", e))
+                    }
+                    .await;
+                    let _ = tx.send(AppEvent::ProjectsLoaded {
+                        provider_config_index,
                         result,
                     });
                 });
@@ -2942,6 +3539,20 @@ fn get_editing_field_mut(state: &mut ConfigModalState) -> Option<&mut String> {
     let idx = state.selected_field_index;
     let provider = state.providers.get_mut(state.selected_provider_index)?;
     provider.get_field_mut(idx)
+}
+
+/// After switching provider type or GCS auth mode, the field count may have
+/// shrunk below the current cursor position. Clamp it so the cursor stays
+/// inside the visible field list.
+fn clamp_selected_field_index(state: &mut ConfigModalState) {
+    if let Some(provider) = state.providers.get(state.selected_provider_index) {
+        let count = provider.field_count();
+        if count == 0 {
+            state.selected_field_index = 0;
+        } else if state.selected_field_index >= count {
+            state.selected_field_index = count - 1;
+        }
+    }
 }
 
 fn auto_rename_local_path(path: &std::path::Path) -> std::path::PathBuf {

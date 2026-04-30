@@ -349,6 +349,26 @@ impl SettingsConfig {
     pub const FIELD_COUNT: usize = 7;
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum GcsAuthMode {
+    /// Service-account JSON key referenced by `credentials_path`, or ADC
+    /// detected automatically. Single-project behaviour (legacy).
+    ServiceAccount,
+    /// Use the gcloud CLI's Application Default Credentials directly.
+    /// No secrets are stored in the config; only the selected project IDs.
+    GcloudAdc,
+}
+
+impl Default for GcsAuthMode {
+    fn default() -> Self {
+        GcsAuthMode::ServiceAccount
+    }
+}
+
+fn default_gcs_auth_mode() -> GcsAuthMode {
+    GcsAuthMode::ServiceAccount
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProviderConfig {
     pub name: String,
@@ -363,6 +383,15 @@ pub struct ProviderConfig {
     pub project: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// GCS-only: which authentication mechanism to use. For non-GCS providers
+    /// this field is ignored. Defaults to `ServiceAccount` to keep legacy
+    /// configs working unchanged.
+    #[serde(default = "default_gcs_auth_mode")]
+    pub gcs_auth_mode: GcsAuthMode,
+    /// GCS-only (GcloudAdc mode): project IDs the user has explicitly
+    /// selected. Buckets are listed across every project in this list.
+    #[serde(default)]
+    pub oauth_projects: Vec<String>,
 }
 
 fn default_enabled() -> bool {
@@ -383,6 +412,8 @@ impl Default for ProviderConfig {
             allow_http: None,
             project: None,
             enabled: true,
+            gcs_auth_mode: GcsAuthMode::default(),
+            oauth_projects: Vec::new(),
         }
     }
 }
@@ -404,38 +435,80 @@ impl ProviderType {
         }
     }
 
+    /// Legacy/minimum field count. For GCS this returns the ServiceAccount
+    /// layout. For provider-aware UI code use `ProviderConfig::field_count`.
     pub fn field_count(&self) -> usize {
         match self {
             ProviderType::S3 | ProviderType::Azure => 8,
-            ProviderType::GCS => 5,
+            ProviderType::GCS => 6,
         }
     }
 
+    /// Legacy field names (ServiceAccount-mode layout for GCS). For
+    /// provider-aware UI code use `ProviderConfig::field_names`.
     pub fn field_names(&self) -> &'static [&'static str] {
         match self {
-            ProviderType::S3 | ProviderType::Azure => &[
-                "Name *",
-                "Type *",
-                "Region *",
-                "Bucket Name (Optional)",
-                "Endpoint (Optional)",
-                "Access Key *",
-                "Secret Key *",
-                "Allow HTTP (Optional)",
-            ],
-            ProviderType::GCS => &[
-                "Name *",
-                "Type *",
-                "Project",
-                "Bucket Name (Optional)",
-                "Credentials Path (Optional)",
-            ],
+            ProviderType::S3 | ProviderType::Azure => FIELDS_S3_AZURE,
+            ProviderType::GCS => FIELDS_GCS_SERVICE_ACCOUNT,
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Provider config field layouts
+// ---------------------------------------------------------------------------
+//
+// GCS has two layouts driven by `gcs_auth_mode`. Both share indices 0..=2
+// (Name, Type, Auth Mode) so switching modes in the UI doesn't jump the
+// cursor unexpectedly.
+
+const FIELDS_S3_AZURE: &[&str] = &[
+    "Name *",
+    "Type *",
+    "Region *",
+    "Bucket Name (Optional)",
+    "Endpoint (Optional)",
+    "Access Key *",
+    "Secret Key *",
+    "Allow HTTP (Optional)",
+];
+
+const FIELDS_GCS_SERVICE_ACCOUNT: &[&str] = &[
+    "Name *",
+    "Type *",
+    "Auth Mode *",
+    "Project",
+    "Bucket Name (Optional)",
+    "Credentials Path (Optional)",
+];
+
+const FIELDS_GCS_GCLOUD_ADC: &[&str] = &[
+    "Name *",
+    "Type *",
+    "Auth Mode *",
+    "ADC Status",
+    "Selected Projects",
+];
+
 impl ProviderConfig {
-    /// Returns the display value for a config field by index (provider-type-aware).
+    /// Field list for this provider, taking `gcs_auth_mode` into account.
+    pub fn field_names(&self) -> &'static [&'static str] {
+        match self.provider_type {
+            ProviderType::S3 | ProviderType::Azure => FIELDS_S3_AZURE,
+            ProviderType::GCS => match self.gcs_auth_mode {
+                GcsAuthMode::ServiceAccount => FIELDS_GCS_SERVICE_ACCOUNT,
+                GcsAuthMode::GcloudAdc => FIELDS_GCS_GCLOUD_ADC,
+            },
+        }
+    }
+
+    /// Number of fields visible in the editor for this provider.
+    pub fn field_count(&self) -> usize {
+        self.field_names().len()
+    }
+
+    /// Returns the display value for a config field by index.
+    /// Provider-type and auth-mode aware.
     pub fn get_field_value(&self, index: usize) -> String {
         match self.provider_type {
             ProviderType::S3 | ProviderType::Azure => match index {
@@ -449,19 +522,40 @@ impl ProviderConfig {
                 7 => self.allow_http.unwrap_or(false).to_string(),
                 _ => String::new(),
             },
-            ProviderType::GCS => match index {
-                0 => self.name.clone(),
-                1 => format!("{:?}", self.provider_type),
-                2 => self.project.clone().unwrap_or_default(),
-                3 => self.bucket_name.clone().unwrap_or_default(),
-                4 => self.credentials_path.clone().unwrap_or_default(),
+            ProviderType::GCS => match (self.gcs_auth_mode.clone(), index) {
+                (_, 0) => self.name.clone(),
+                (_, 1) => format!("{:?}", self.provider_type),
+                (GcsAuthMode::ServiceAccount, 2) => "Service Account".to_string(),
+                (GcsAuthMode::GcloudAdc, 2) => "gcloud ADC".to_string(),
+                (GcsAuthMode::ServiceAccount, 3) => self.project.clone().unwrap_or_default(),
+                (GcsAuthMode::ServiceAccount, 4) => self.bucket_name.clone().unwrap_or_default(),
+                (GcsAuthMode::ServiceAccount, 5) => {
+                    self.credentials_path.clone().unwrap_or_default()
+                }
+                (GcsAuthMode::GcloudAdc, 3) => {
+                    // Actual ADC presence/absence is resolved lazily by the
+                    // UI layer (it reads the filesystem). Show a neutral
+                    // placeholder here so this method stays pure.
+                    "(run `gcloud auth application-default login`)".to_string()
+                }
+                (GcsAuthMode::GcloudAdc, 4) => {
+                    if self.oauth_projects.is_empty() {
+                        "(none — press P to select)".to_string()
+                    } else {
+                        format!(
+                            "{} selected: {}",
+                            self.oauth_projects.len(),
+                            self.oauth_projects.join(", ")
+                        )
+                    }
+                }
                 _ => String::new(),
             },
         }
     }
 
     /// Returns a mutable reference to the string field at the given index.
-    /// Returns None for cycle/toggle fields (Type, Allow HTTP).
+    /// Returns None for cycle/toggle fields, read-only fields, and actions.
     pub fn get_field_mut(&mut self, index: usize) -> Option<&mut String> {
         match self.provider_type {
             ProviderType::S3 | ProviderType::Azure => match index {
@@ -473,11 +567,19 @@ impl ProviderConfig {
                 6 => Some(self.secret_access_key.get_or_insert_with(String::new)),
                 _ => None,
             },
-            ProviderType::GCS => match index {
-                0 => Some(&mut self.name),
-                2 => Some(self.project.get_or_insert_with(String::new)),
-                3 => Some(self.bucket_name.get_or_insert_with(String::new)),
-                4 => Some(self.credentials_path.get_or_insert_with(String::new)),
+            ProviderType::GCS => match (self.gcs_auth_mode.clone(), index) {
+                (_, 0) => Some(&mut self.name),
+                (GcsAuthMode::ServiceAccount, 3) => {
+                    Some(self.project.get_or_insert_with(String::new))
+                }
+                (GcsAuthMode::ServiceAccount, 4) => {
+                    Some(self.bucket_name.get_or_insert_with(String::new))
+                }
+                (GcsAuthMode::ServiceAccount, 5) => {
+                    Some(self.credentials_path.get_or_insert_with(String::new))
+                }
+                // GcloudAdc fields (3 = ADC status, 4 = projects list) are
+                // managed through the project picker modal, not free text.
                 _ => None,
             },
         }
@@ -490,7 +592,7 @@ impl ProviderConfig {
         } // Type field — always a cycle
         match self.provider_type {
             ProviderType::S3 | ProviderType::Azure => index == 7, // Allow HTTP
-            ProviderType::GCS => false,
+            ProviderType::GCS => index == 2,                      // Auth Mode
         }
     }
 
@@ -507,8 +609,28 @@ impl ProviderConfig {
                 "[ true | false ] - Current: {}",
                 self.allow_http.unwrap_or(false)
             )),
+            (ProviderType::GCS, 2) => {
+                let current = match self.gcs_auth_mode {
+                    GcsAuthMode::ServiceAccount => "Service Account",
+                    GcsAuthMode::GcloudAdc => "gcloud ADC",
+                };
+                Some(format!(
+                    "[ Service Account | gcloud ADC ] - Current: {}",
+                    current
+                ))
+            }
             _ => None,
         }
+    }
+
+    /// Whether this field is a "read-only / action" field — not editable as
+    /// text, not a cycle. The UI surfaces these with a hint instead of an
+    /// editing caret. Used by GcloudAdc mode for the ADC status line and
+    /// the Selected Projects action.
+    pub fn is_action_field(&self, index: usize) -> bool {
+        matches!(self.provider_type, ProviderType::GCS)
+            && matches!(self.gcs_auth_mode, GcsAuthMode::GcloudAdc)
+            && (index == 3 || index == 4)
     }
 }
 

@@ -1,4 +1,6 @@
-use stuie::config::{Config, KeymapConfig, ProviderConfig, ProviderType, SettingsConfig};
+use stuie::config::{
+    Config, GcsAuthMode, KeymapConfig, ProviderConfig, ProviderType, SettingsConfig,
+};
 
 // ===== KeymapConfig =====
 
@@ -188,4 +190,120 @@ fn config_deserialize_with_missing_new_fields_uses_defaults() {
     assert!(!cfg.settings.log_file_path.is_empty());
     // Keymap also falls back
     assert_eq!(cfg.keymap.toggle_preview, "p");
+}
+
+// ===== GCS auth mode =====
+
+#[test]
+fn gcs_default_auth_mode_is_service_account() {
+    let pc = ProviderConfig {
+        provider_type: ProviderType::GCS,
+        ..ProviderConfig::default()
+    };
+    assert_eq!(pc.gcs_auth_mode, GcsAuthMode::ServiceAccount);
+}
+
+#[test]
+fn legacy_gcs_config_deserializes_with_defaults() {
+    // Reader fixture mimicking an older config file that predates the
+    // gcs_auth_mode / oauth_projects fields. Must deserialize into
+    // ServiceAccount mode with an empty project list.
+    let json = r#"{
+        "providers": [{
+            "name": "my-gcs",
+            "provider_type": "GCS",
+            "project": "my-project",
+            "credentials_path": "/tmp/key.json"
+        }]
+    }"#;
+    let cfg: Config = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(cfg.providers.len(), 1);
+    let p = &cfg.providers[0];
+    assert_eq!(p.gcs_auth_mode, GcsAuthMode::ServiceAccount);
+    assert!(p.oauth_projects.is_empty());
+    assert!(p.enabled);
+}
+
+#[test]
+fn gcs_service_account_has_six_fields() {
+    let pc = ProviderConfig {
+        provider_type: ProviderType::GCS,
+        gcs_auth_mode: GcsAuthMode::ServiceAccount,
+        ..ProviderConfig::default()
+    };
+    assert_eq!(pc.field_count(), 6);
+    assert_eq!(pc.field_names()[0], "Name *");
+    assert_eq!(pc.field_names()[2], "Auth Mode *");
+    assert_eq!(pc.field_names()[3], "Project");
+}
+
+#[test]
+fn gcs_gcloud_adc_has_five_fields() {
+    let pc = ProviderConfig {
+        provider_type: ProviderType::GCS,
+        gcs_auth_mode: GcsAuthMode::GcloudAdc,
+        ..ProviderConfig::default()
+    };
+    assert_eq!(pc.field_count(), 5);
+    assert_eq!(pc.field_names()[2], "Auth Mode *");
+    assert_eq!(pc.field_names()[3], "ADC Status");
+    assert_eq!(pc.field_names()[4], "Selected Projects");
+}
+
+#[test]
+fn gcs_auth_mode_is_a_cycle_field_at_index_2() {
+    let pc = ProviderConfig {
+        provider_type: ProviderType::GCS,
+        ..ProviderConfig::default()
+    };
+    assert!(pc.is_cycle_field(2));
+    assert!(pc.cycle_field_hint(2).is_some());
+}
+
+#[test]
+fn gcloud_adc_action_fields_are_not_free_text() {
+    let mut pc = ProviderConfig {
+        provider_type: ProviderType::GCS,
+        gcs_auth_mode: GcsAuthMode::GcloudAdc,
+        ..ProviderConfig::default()
+    };
+    // Index 3 (ADC status) and 4 (project picker) are read-only / action.
+    assert!(pc.is_action_field(3));
+    assert!(pc.is_action_field(4));
+    assert!(pc.get_field_mut(3).is_none());
+    assert!(pc.get_field_mut(4).is_none());
+}
+
+#[test]
+fn gcs_project_count_is_rendered_in_selected_projects_field() {
+    let mut pc = ProviderConfig {
+        provider_type: ProviderType::GCS,
+        gcs_auth_mode: GcsAuthMode::GcloudAdc,
+        ..ProviderConfig::default()
+    };
+    assert!(pc.get_field_value(4).contains("none"));
+    pc.oauth_projects = vec!["proj-a".into(), "proj-b".into()];
+    let v = pc.get_field_value(4);
+    assert!(v.contains("2 selected"));
+    assert!(v.contains("proj-a"));
+    assert!(v.contains("proj-b"));
+}
+
+#[test]
+fn config_round_trip_preserves_oauth_projects() {
+    let cfg = Config {
+        providers: vec![ProviderConfig {
+            name: "gcs-one".into(),
+            provider_type: ProviderType::GCS,
+            gcs_auth_mode: GcsAuthMode::GcloudAdc,
+            oauth_projects: vec!["alpha".into(), "beta".into()],
+            ..ProviderConfig::default()
+        }],
+        ..Config::default()
+    };
+    let json = serde_json::to_string(&cfg).expect("serialize");
+    let parsed: Config = serde_json::from_str(&json).expect("deserialize");
+    let p = &parsed.providers[0];
+    assert_eq!(p.gcs_auth_mode, GcsAuthMode::GcloudAdc);
+    assert_eq!(p.oauth_projects, vec!["alpha", "beta"]);
 }

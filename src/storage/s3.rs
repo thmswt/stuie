@@ -101,6 +101,7 @@ impl StorageBackend for S3Storage {
                     name: bucket_name.clone(),
                     provider_index: self.provider_index,
                     location: None,
+                    project_id: None,
                 }]);
             }
         }
@@ -125,6 +126,7 @@ impl StorageBackend for S3Storage {
                         name,
                         provider_index: self.provider_index,
                         location: None,
+                        project_id: None,
                     })
                 }
             })

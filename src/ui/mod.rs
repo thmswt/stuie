@@ -164,11 +164,49 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     ListItem::new("Unknown Provider")
                 }
             }
-            crate::app::SidebarItem::Bucket { name, location, .. } => {
+            crate::app::SidebarItem::Project {
+                provider_index,
+                project_id,
+            } => {
+                let is_expanded = app
+                    .expanded_projects
+                    .contains(&(*provider_index, project_id.clone()));
+                let expand_icon = if is_expanded {
+                    "\u{25bc}"
+                } else {
+                    "\u{25b6}"
+                };
+                if show_icons {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(" ├ ", Style::default().fg(theme.text_muted)),
+                        Span::styled(
+                            format!("{} ", expand_icon),
+                            Style::default().fg(theme.text_muted),
+                        ),
+                        Span::styled("☁ ", Style::default().fg(theme.accent)),
+                        Span::styled(project_id.clone(), Style::default().fg(theme.text_primary)),
+                    ]))
+                } else {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(" ├ ", Style::default().fg(theme.text_muted)),
+                        Span::raw(format!("{} {}", expand_icon, project_id)),
+                    ]))
+                }
+            }
+            crate::app::SidebarItem::Bucket {
+                name,
+                location,
+                project_id,
+                ..
+            } => {
                 let is_last = raw_sidebar_items.get(i + 1).map_or(true, |next| {
-                    matches!(next, crate::app::SidebarItem::Provider(_))
+                    matches!(
+                        next,
+                        crate::app::SidebarItem::Provider(_) | crate::app::SidebarItem::Project { .. }
+                    )
                 });
                 let branch = if is_last { "└─" } else { "├─" };
+                let indent = if project_id.is_some() { "    " } else { " " };
                 let loc_suffix = location
                     .as_ref()
                     .map(|l| format!(" ({})", l.to_lowercase()))
@@ -176,7 +214,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 if show_icons {
                     ListItem::new(Line::from(vec![
                         Span::styled(
-                            format!(" {} ", branch),
+                            format!("{}{} ", indent, branch),
                             Style::default().fg(theme.text_muted),
                         ),
                         Span::styled(
@@ -189,7 +227,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 } else {
                     ListItem::new(Line::from(vec![
                         Span::styled(
-                            format!(" {} ", branch),
+                            format!("{}{} ", indent, branch),
                             Style::default().fg(theme.text_muted),
                         ),
                         Span::styled(name.clone(), Style::default().fg(theme.accent)),
@@ -387,7 +425,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         let is_editing = matches!(app.input_mode, InputMode::Editing);
         match (active_tab, is_editing) {
             (Some(ConfigTab::Providers), true) => {
-                " Next/Prev Field: Tab/S-Tab or \u{2191}/\u{2193} | Finish: Enter/Esc | Type to Input | Delete: Backspace | Type/HTTP: \u{2190}/\u{2192} "
+                " Next/Prev Field: Tab/S-Tab or \u{2191}/\u{2193} | Finish: Enter/Esc | Type to Input | Delete: Backspace | Type/HTTP: \u{2190}/\u{2192} | Projects (on Selected Projects): Enter/P "
             }
             (Some(ConfigTab::Providers), false) => {
                 " Switch Tab: Tab/S-Tab | Navigate: j/k | Edit: e/Enter | Add: a | Delete: D | Save: s | Toggle: Enter | Close: q "
@@ -494,6 +532,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // Modals
     if app.show_config_modal {
         render_config_modal(f, app, theme);
+        // Project picker overlays on top of the config modal.
+        if let Some(state) = app.config_modal_state.as_mut() {
+            if state.project_picker.is_some() {
+                render_project_picker(f, state, theme);
+            }
+        }
     }
 
     match app.input_mode {
@@ -588,6 +632,9 @@ Providers Tab:
   Enter      : Toggle enabled/disabled
   a          : Add new provider
   D          : Delete selected provider
+
+  In Edit Mode, cursor on the Selected Projects field (GCS + gcloud ADC):
+  Enter / P  : Open project picker
 
 Keymap Tab:
   j/k        : Navigate keybindings
@@ -837,6 +884,143 @@ fn render_overwrite_confirmation(f: &mut Frame, app: &App, theme: &AppTheme) {
     f.render_widget(hint, chunks[2]);
 }
 
+fn render_project_picker(
+    f: &mut Frame,
+    state: &mut crate::app::ConfigModalState,
+    theme: &AppTheme,
+) {
+    // Grab the provider name up front so we don't keep an immutable borrow
+    // against `state.providers` alive while we mutably borrow `project_picker`
+    // below.
+    let provider_config_index = match state.project_picker.as_ref() {
+        Some(p) => p.provider_config_index,
+        None => return,
+    };
+    let provider_name = state
+        .providers
+        .get(provider_config_index)
+        .map(|p| p.name.clone())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "(unnamed)".to_string());
+    let picker = match state.project_picker.as_mut() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let area = centered_rect(70, 70, f.area());
+    f.render_widget(Clear, area);
+    let title = format!(" Select Projects — {} ", provider_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border_active));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // filter bar
+            Constraint::Min(0),    // list / status area
+            Constraint::Length(1), // hint
+        ])
+        .split(inner);
+
+    // Filter bar
+    let filter_para = if picker.filter_active {
+        Paragraph::new(format!(" /{}|", picker.filter))
+            .style(Style::default().fg(theme.border_active))
+    } else if picker.filter.is_empty() {
+        Paragraph::new(" / to filter")
+            .style(Style::default().fg(theme.text_muted))
+    } else {
+        Paragraph::new(format!(" /{}", picker.filter))
+            .style(Style::default().fg(theme.text_muted))
+    };
+    f.render_widget(filter_para, chunks[0]);
+
+    if picker.loading {
+        let loading_para = Paragraph::new("Loading projects from Cloud Resource Manager…")
+            .style(Style::default().fg(theme.text_muted));
+        f.render_widget(loading_para, chunks[1]);
+    } else if let Some(err) = &picker.error {
+        let text = format!(
+            "Failed to load projects:\n\n{}\n\nRun 'gcloud auth application-default login \
+             --scopes=https://www.googleapis.com/auth/cloud-platform.read-only' \
+             then reopen the picker (Esc, P).",
+            err
+        );
+        let err_para = Paragraph::new(text)
+            .style(Style::default().fg(theme.error))
+            .wrap(Wrap { trim: true });
+        f.render_widget(err_para, chunks[1]);
+    } else if picker.projects.is_empty() {
+        let empty_para = Paragraph::new(
+            "No active GCP projects visible to your ADC credentials. \
+             Check that the right account is selected with 'gcloud auth list'.",
+        )
+        .style(Style::default().fg(theme.text_muted))
+        .wrap(Wrap { trim: true });
+        f.render_widget(empty_para, chunks[1]);
+    } else {
+        let visible = picker.filtered_indices();
+
+        if visible.is_empty() {
+            let empty_para = Paragraph::new(format!(
+                "No projects match filter \"{}\".",
+                picker.filter
+            ))
+            .style(Style::default().fg(theme.text_muted));
+            f.render_widget(empty_para, chunks[1]);
+        } else {
+            // Ensure the widget's `selected` mirrors our cursor so ratatui's
+            // built-in scroll follows moves past the viewport edge.
+            picker.list_state.select(Some(picker.cursor.min(visible.len() - 1)));
+
+            let items: Vec<ListItem> = visible
+                .iter()
+                .filter_map(|&i| picker.projects.get(i))
+                .map(|project| {
+                    let is_checked = picker.checked.contains(&project.id);
+                    let checkbox = if is_checked { "[*]" } else { "[ ]" };
+                    let row_style = if is_checked {
+                        Style::default().fg(theme.success)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{} ", checkbox), row_style),
+                        Span::styled(project.id.clone(), row_style),
+                        Span::styled(
+                            format!("  {}", project.name),
+                            Style::default().fg(theme.text_muted),
+                        ),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items)
+                .highlight_symbol("> ")
+                .highlight_style(
+                    Style::default()
+                        .fg(theme.highlight_fg)
+                        .bg(theme.highlight_bg)
+                        .add_modifier(Modifier::BOLD),
+                );
+            f.render_stateful_widget(list, chunks[1], &mut picker.list_state);
+        }
+    }
+
+    let hint = if picker.loading || picker.error.is_some() || picker.projects.is_empty() {
+        " Esc: close "
+    } else if picker.filter_active {
+        " Type to filter | Enter: commit | Esc: clear filter "
+    } else {
+        " j/k: move | Space: toggle | a: all (filtered) | n: none (filtered) | /: filter | Enter: save | Esc: cancel "
+    };
+    let hint_para = Paragraph::new(hint).style(Style::default().fg(theme.text_muted));
+    f.render_widget(hint_para, chunks[2]);
+}
+
 fn render_config_modal(f: &mut Frame, app: &mut App, theme: &AppTheme) {
     let area = centered_rect(80, 80, f.area());
     f.render_widget(Clear, area);
@@ -943,8 +1127,8 @@ fn render_config_providers(
     f.render_widget(providers_list, chunks[0]);
 
     if let Some(provider) = state.providers.get(state.selected_provider_index) {
-        let field_names = provider.provider_type.field_names();
-        let field_count = provider.provider_type.field_count();
+        let field_names = provider.field_names();
+        let field_count = provider.field_count();
 
         let constraints: Vec<Constraint> =
             (0..field_count).map(|_| Constraint::Length(3)).collect();
@@ -964,6 +1148,21 @@ fn render_config_providers(
 
             let mut value = provider.get_field_value(i);
 
+            // For GCS GcloudAdc mode, field 3 is the live ADC status — resolve
+            // by probing the filesystem, and field 4 is the picker hint.
+            if provider.provider_type == crate::config::ProviderType::GCS
+                && provider.gcs_auth_mode == crate::config::GcsAuthMode::GcloudAdc
+            {
+                if i == 3 {
+                    value = match crate::storage::gcs::detect_adc_path() {
+                        Some(path) => format!("Found: {}", path.display()),
+                        None => "MISSING — run `gcloud auth application-default login \
+                             --scopes=https://www.googleapis.com/auth/cloud-platform.read-only`"
+                            .to_string(),
+                    };
+                }
+            }
+
             let title = if is_selected {
                 format!("{} [EDITING]", field_names[i])
             } else {
@@ -973,6 +1172,8 @@ fn render_config_providers(
             if is_selected {
                 if let Some(hint) = provider.cycle_field_hint(i) {
                     value = hint;
+                } else if provider.is_action_field(i) {
+                    // Read-only / action fields: don't show an editing caret.
                 } else {
                     value.push('_');
                 }

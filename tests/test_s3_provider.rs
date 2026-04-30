@@ -19,6 +19,7 @@ async fn test_s3_provider_with_minio() {
         allow_http: Some(true),
         project: None,
         enabled: true,
+        ..ProviderConfig::default()
     };
 
     let storage = S3Storage::new(config, 0)
@@ -85,6 +86,7 @@ async fn test_s3_transfer() {
         allow_http: Some(true),
         project: None,
         enabled: true,
+        ..ProviderConfig::default()
     };
 
     let storage = S3Storage::new(config, 0)
@@ -163,6 +165,7 @@ async fn test_s3_provider_list_all_buckets() {
         allow_http: Some(true),
         project: None,
         enabled: true,
+        ..ProviderConfig::default()
     };
 
     let storage = S3Storage::new(config, 0)
@@ -191,6 +194,7 @@ async fn test_s3_provider_with_empty_bucket_name() {
         allow_http: Some(true),
         project: None,
         enabled: true,
+        ..ProviderConfig::default()
     };
 
     let storage = S3Storage::new(config, 0)

@@ -1,14 +1,41 @@
-use crate::config::{ProviderConfig, ProviderType};
-use crate::storage::{Bucket, Object, ProgressCallback, StorageBackend};
+use crate::config::{GcsAuthMode, ProviderConfig, ProviderType};
+use crate::storage::{Bucket, GcpProject, Object, ProgressCallback, StorageBackend};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures::StreamExt;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
+
+/// Returns the path where gcloud stores application-default credentials on
+/// all platforms. (gcloud uses `~/.config/gcloud/...` on macOS too, not
+/// Library/Application Support — so we explicitly avoid `dirs::config_dir`
+/// here.)
+pub fn default_adc_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".config/gcloud/application_default_credentials.json"))
+}
+
+/// Locate an Application Default Credentials file on disk. Checks the
+/// `GOOGLE_APPLICATION_CREDENTIALS` env var first, then the default gcloud
+/// ADC path. Returns `None` if neither is present.
+pub fn detect_adc_path() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+        let p = PathBuf::from(v);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Some(p) = default_adc_path() {
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
 
 // ---------------------------------------------------------------------------
 // Credential types
@@ -106,27 +133,33 @@ impl GcsStorage {
     // -- credential loading -------------------------------------------------
 
     fn load_credentials(config: &ProviderConfig) -> Result<(GcsCredentials, Option<String>)> {
-        let resolved_path = config
-            .credentials_path
-            .as_ref()
-            .filter(|p| !p.trim().is_empty())
-            .cloned()
-            .or_else(|| std::env::var("GOOGLE_APPLICATION_CREDENTIALS").ok())
-            .or_else(|| {
-                let default =
-                    dirs::home_dir()?.join(".config/gcloud/application_default_credentials.json");
-                if default.exists() {
-                    Some(default.to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            });
+        // In GcloudAdc mode we always go through the ADC path, ignoring any
+        // value the user might have typed into credentials_path (so the two
+        // auth modes never interfere with each other).
+        let resolved_path = match config.gcs_auth_mode {
+            GcsAuthMode::GcloudAdc => detect_adc_path().map(|p| p.to_string_lossy().to_string()),
+            GcsAuthMode::ServiceAccount => config
+                .credentials_path
+                .as_ref()
+                .filter(|p| !p.trim().is_empty())
+                .cloned()
+                .or_else(|| std::env::var("GOOGLE_APPLICATION_CREDENTIALS").ok())
+                .or_else(|| detect_adc_path().map(|p| p.to_string_lossy().to_string())),
+        };
 
-        let resolved_path = resolved_path.context(
-            "No GCS credentials found. Provide a Credentials Path in the provider config, \
-             set the GOOGLE_APPLICATION_CREDENTIALS env var, or run \
-             'gcloud auth application-default login'.",
-        )?;
+        let resolved_path = resolved_path.with_context(|| match config.gcs_auth_mode {
+            GcsAuthMode::GcloudAdc => {
+                "No Application Default Credentials found. Run \
+                 'gcloud auth application-default login \
+                 --scopes=https://www.googleapis.com/auth/cloud-platform.read-only' \
+                 then reopen this provider."
+                    .to_string()
+            }
+            GcsAuthMode::ServiceAccount => "No GCS credentials found. Provide a Credentials Path \
+                 in the provider config, set the GOOGLE_APPLICATION_CREDENTIALS env var, or run \
+                 'gcloud auth application-default login'."
+                .to_string(),
+        })?;
 
         let content = std::fs::read_to_string(&resolved_path)
             .with_context(|| format!("Failed to read credentials file: {}", resolved_path))?;
@@ -332,6 +365,154 @@ impl GcsStorage {
              or use a service account key that contains a project_id."
         )
     }
+
+    /// Delete a single GCS object by exact name via the JSON API. The name
+    /// is preserved verbatim (including any trailing `/`) so we can target
+    /// folder-marker keys that `object_store::path::Path` would otherwise
+    /// strip.
+    async fn gcs_delete_object(
+        &self,
+        token: &str,
+        bucket: &str,
+        object_name: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "https://storage.googleapis.com/storage/v1/b/{}/o/{}",
+            bucket,
+            percent_encode_object_name(object_name)
+        );
+        let resp = self
+            .http_client
+            .delete(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .with_context(|| format!("Failed to delete GCS object '{}'", object_name))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!(
+                "GCS delete failed for '{}' ({}): {}",
+                object_name,
+                status,
+                body
+            );
+        }
+        Ok(())
+    }
+
+    /// List buckets under a specific project. Shared by the aggregating
+    /// `list_buckets` call (GcloudAdc mode) and the trait-level
+    /// `list_buckets_for_project` override used by the sidebar.
+    async fn list_buckets_for_project_inner(&self, project: &str) -> Result<Vec<Bucket>> {
+        let token = self.get_access_token().await?;
+        tracing::info!(
+            provider = %self.config.name,
+            project = %project,
+            "Listing GCS buckets for project"
+        );
+
+        let resp = self
+            .http_client
+            .get("https://storage.googleapis.com/storage/v1/b")
+            .bearer_auth(&token)
+            .query(&[("project", project)])
+            .send()
+            .await
+            .context("Failed to list GCS buckets")?;
+
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .context("Failed to read bucket list response body")?;
+
+        if !status.is_success() {
+            bail!(
+                "GCS bucket listing for project '{}' failed ({}): {}",
+                project,
+                status,
+                body
+            );
+        }
+
+        let list: BucketListResponse = serde_json::from_str(&body).with_context(|| {
+            format!(
+                "Failed to parse bucket list response for project '{}' (status {}, body: {})",
+                project, status, body
+            )
+        })?;
+
+        let buckets = list
+            .items
+            .into_iter()
+            .map(|b| Bucket {
+                name: b.name,
+                provider_index: self.provider_index,
+                location: b.location,
+                project_id: Some(project.to_string()),
+            })
+            .collect();
+
+        Ok(buckets)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GCS object-list API response (used by recursive delete)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ObjectListResponse {
+    #[serde(default)]
+    items: Vec<ObjectListItem>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ObjectListItem {
+    name: String,
+}
+
+/// Percent-encode bytes that aren't unreserved per RFC 3986. Used to embed
+/// a GCS object name (which may contain `/`, spaces, etc.) inside the URL
+/// path of the JSON API.
+fn percent_encode_object_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Cloud Resource Manager API response
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ProjectListResponse {
+    #[serde(default)]
+    projects: Vec<ProjectItem>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProjectItem {
+    #[serde(rename = "projectId")]
+    project_id: String,
+    name: Option<String>,
+    #[serde(rename = "lifecycleState")]
+    lifecycle_state: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +530,81 @@ impl StorageBackend for GcsStorage {
     }
 
     #[tracing::instrument(skip_all, fields(provider = %self.config.name))]
+    async fn list_projects(&self) -> Result<Vec<GcpProject>> {
+        let token = self.get_access_token().await?;
+        let mut projects: Vec<GcpProject> = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut query: Vec<(&str, String)> = vec![
+                ("filter", "lifecycleState:ACTIVE".to_string()),
+                ("pageSize", "200".to_string()),
+            ];
+            if let Some(tok) = &page_token {
+                query.push(("pageToken", tok.clone()));
+            }
+
+            let resp = self
+                .http_client
+                .get("https://cloudresourcemanager.googleapis.com/v1/projects")
+                .bearer_auth(&token)
+                .query(&query)
+                .send()
+                .await
+                .context("Failed to list GCP projects")?;
+
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .context("Failed to read projects list response body")?;
+
+            if !status.is_success() {
+                bail!(
+                    "GCP project listing failed ({}): {}. \
+                     Ensure your gcloud ADC token has the cloud-platform or \
+                     cloud-platform.read-only scope.",
+                    status,
+                    body
+                );
+            }
+
+            let parsed: ProjectListResponse = serde_json::from_str(&body).with_context(|| {
+                format!(
+                    "Failed to parse projects list response (status {}, body: {})",
+                    status, body
+                )
+            })?;
+
+            for p in parsed.projects {
+                // Belt-and-braces: the filter should already exclude non-active.
+                if let Some(state) = &p.lifecycle_state {
+                    if state != "ACTIVE" {
+                        continue;
+                    }
+                }
+                projects.push(GcpProject {
+                    name: p.name.clone().unwrap_or_else(|| p.project_id.clone()),
+                    id: p.project_id,
+                });
+            }
+
+            match parsed.next_page_token {
+                Some(t) if !t.is_empty() => page_token = Some(t),
+                _ => break,
+            }
+        }
+
+        tracing::info!(
+            provider = %self.config.name,
+            project_count = projects.len(),
+            "GCP project listing complete"
+        );
+
+        Ok(projects)
+    }
+
+    #[tracing::instrument(skip_all, fields(provider = %self.config.name))]
     async fn list_buckets(&self) -> Result<Vec<Bucket>> {
         // If a specific bucket is configured, skip the API call.
         if let Some(bucket_name) = &self.config.bucket_name {
@@ -358,89 +614,36 @@ impl StorageBackend for GcsStorage {
                     name: bucket_name.clone(),
                     provider_index: self.provider_index,
                     location: None,
+                    project_id: None,
                 }]);
             }
         }
 
-        let project = self.get_project()?;
-        let token = self.get_access_token().await?;
-
-        tracing::info!(
-            provider = %self.config.name,
-            project = %project,
-            "Listing GCS buckets"
-        );
-
-        let resp = self
-            .http_client
-            .get("https://storage.googleapis.com/storage/v1/b")
-            .bearer_auth(&token)
-            .query(&[("project", project.as_str())])
-            .send()
-            .await
-            .context("Failed to list GCS buckets")?;
-
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .context("Failed to read bucket list response body")?;
-
-        if !status.is_success() {
-            bail!("GCS bucket listing failed ({}): {}", status, body);
-        }
-
-        tracing::info!(
-            provider = %self.config.name,
-            project = %project,
-            status = %status,
-            body_len = body.len(),
-            "GCS bucket listing response received"
-        );
-
-        let list: BucketListResponse = serde_json::from_str(&body).with_context(|| {
-            format!(
-                "Failed to parse bucket list response (status {}, body: {})",
-                status, body
-            )
-        })?;
-
-        tracing::info!(
-            provider = %self.config.name,
-            project = %project,
-            item_count = list.items.len(),
-            has_next_page = list.next_page_token.is_some(),
-            "GCS bucket listing parsed"
-        );
-
-        if list.items.is_empty() {
-            tracing::warn!(
-                provider = %self.config.name,
-                project = %project,
-                "GCS returned an empty bucket list. Raw response body: {}",
-                body
-            );
-        }
-
-        let buckets = list
-            .items
-            .into_iter()
-            .map(|b| {
-                tracing::debug!(
-                    provider = %self.config.name,
-                    bucket = %b.name,
-                    location = ?b.location,
-                    "GCS bucket"
-                );
-                Bucket {
-                    name: b.name,
-                    provider_index: self.provider_index,
-                    location: b.location,
+        match self.config.gcs_auth_mode {
+            GcsAuthMode::ServiceAccount => {
+                let project = self.get_project()?;
+                let mut buckets = self.list_buckets_for_project_inner(&project).await?;
+                // Single-project mode: leave project_id=None so the sidebar
+                // renders the existing 2-level tree (Provider > Bucket).
+                for b in &mut buckets {
+                    b.project_id = None;
                 }
-            })
-            .collect();
+                Ok(buckets)
+            }
+            GcsAuthMode::GcloudAdc => {
+                // Multi-project mode does NOT aggregate here any more.
+                // Buckets are fetched lazily when the user presses Enter on
+                // a Project row in the sidebar (see
+                // `list_buckets_for_project` trait override). Returning an
+                // empty Vec keeps `ExpandProvider` from hitting the network
+                // during provider expansion.
+                Ok(Vec::new())
+            }
+        }
+    }
 
-        Ok(buckets)
+    async fn list_buckets_for_project(&self, project_id: &str) -> Result<Vec<Bucket>> {
+        self.list_buckets_for_project_inner(project_id).await
     }
 
     #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, prefix = ?prefix))]
@@ -592,50 +795,118 @@ impl StorageBackend for GcsStorage {
 
     #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, path = %path))]
     async fn create_folder(&self, bucket: &str, path: &Path) -> Result<()> {
-        let store = self.create_store(bucket)?;
+        // We must talk to the GCS JSON upload API directly here:
+        // `object_store::path::Path` normalizes paths and strips the trailing
+        // slash that distinguishes a folder marker from a regular object.
+        let token = self.get_access_token().await?;
         let mut path_str = path.to_string();
         if !path_str.ends_with('/') {
             path_str.push('/');
         }
-        let folder_path = Path::from(path_str);
-        store
-            .put(&folder_path, bytes::Bytes::new().into())
+
+        let url = format!(
+            "https://storage.googleapis.com/upload/storage/v1/b/{}/o",
+            bucket
+        );
+
+        let resp = self
+            .http_client
+            .post(&url)
+            .bearer_auth(&token)
+            .query(&[("uploadType", "media"), ("name", path_str.as_str())])
+            .header("Content-Length", "0")
+            .body(Vec::<u8>::new())
+            .send()
             .await
             .context("Failed to create folder in GCS")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("GCS folder creation failed ({}): {}", status, body);
+        }
+
         tracing::info!("GCS create_folder complete");
         Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(provider = %self.config.name, bucket = %bucket, target_count = paths.len()))]
     async fn delete_objects(&self, bucket: &str, paths: &[Path]) -> Result<()> {
+        // We must talk to the GCS JSON API directly here for the same reason
+        // as `create_folder`: `object_store::path::Path` strips trailing
+        // slashes, so going through `store.delete` / `store.list` cannot
+        // address folder-marker keys (`foo/`) at all — listing returns the
+        // marker stripped to `foo`, and deleting `foo` then 404s.
         tracing::info!("GCS delete started");
-        let store = self.create_store(bucket)?;
+        let token = self.get_access_token().await?;
         let mut deleted_keys: u64 = 0;
 
         for path in paths {
             let path_str = path.to_string();
 
-            // Delete the object itself.
-            let _ = store.delete(path).await;
+            // 1. Delete the target itself, both with and without trailing
+            //    slash (we don't know if it's a file or a folder marker).
+            let _ = self.gcs_delete_object(&token, bucket, &path_str).await;
 
-            // Also try with trailing slash (folder marker).
             let folder_marker = if path_str.ends_with('/') {
                 path_str.clone()
             } else {
                 format!("{}/", path_str)
             };
-            let _ = store.delete(&Path::from(folder_marker.clone())).await;
+            let _ = self
+                .gcs_delete_object(&token, bucket, &folder_marker)
+                .await;
 
-            // Recursively delete everything under the prefix.
-            let prefix = Path::from(folder_marker);
-            let mut stream = store.list(Some(&prefix));
-            while let Some(meta) = stream.next().await {
-                if let Ok(meta) = meta {
-                    store
-                        .delete(&meta.location)
+            // 2. Recursively delete everything under the prefix.
+            let mut page_token: Option<String> = None;
+            loop {
+                let mut query: Vec<(&str, String)> = vec![
+                    ("prefix", folder_marker.clone()),
+                    ("maxResults", "1000".to_string()),
+                ];
+                if let Some(t) = &page_token {
+                    query.push(("pageToken", t.clone()));
+                }
+
+                let url =
+                    format!("https://storage.googleapis.com/storage/v1/b/{}/o", bucket);
+                let resp = self
+                    .http_client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&query)
+                    .send()
+                    .await
+                    .context("Failed to list objects for deletion")?;
+
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .await
+                    .context("Failed to read object list response body")?;
+
+                if !status.is_success() {
+                    bail!("GCS list for deletion failed ({}): {}", status, body);
+                }
+
+                let list: ObjectListResponse =
+                    serde_json::from_str(&body).with_context(|| {
+                        format!(
+                            "Failed to parse object list response (status {}, body: {})",
+                            status, body
+                        )
+                    })?;
+
+                for item in list.items {
+                    self.gcs_delete_object(&token, bucket, &item.name)
                         .await
                         .context("Failed to delete object in GCS")?;
                     deleted_keys += 1;
+                }
+
+                match list.next_page_token {
+                    Some(t) if !t.is_empty() => page_token = Some(t),
+                    _ => break,
                 }
             }
         }

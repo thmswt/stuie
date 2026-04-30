@@ -94,7 +94,7 @@ fn print_quit_screen(app: &App) {
     // Print Session Tasks
     if app.session_tasks.is_empty() {
         println!(
-            "Efficiency level Master: You did absolutely nothing this session. Zero tasks, zero worries! 🧘"
+            "You did absolutely nothing this session. Zero tasks, zero worries! 🧘"
         );
     } else {
         let log_to_file = app.config.settings.log_to_file;
