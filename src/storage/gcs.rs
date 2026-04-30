@@ -56,6 +56,51 @@ struct CredentialFile {
     refresh_token: Option<String>,
 }
 
+/// OAuth scope to request for a service-account access token. When the
+/// provider is in read-only mode we request `devstorage.read_only`, which
+/// GCS itself rejects writes against (HTTP 403) — defense-in-depth on top
+/// of the `ReadOnlyStorage` wrapper. Otherwise we keep the historical
+/// `cloud-platform` scope so the existing read+write behaviour is unchanged.
+pub fn service_account_scope(read_only: bool) -> &'static str {
+    if read_only {
+        "https://www.googleapis.com/auth/devstorage.read_only"
+    } else {
+        "https://www.googleapis.com/auth/cloud-platform"
+    }
+}
+
+/// How `create_store` should populate object_store's credential builder for
+/// service-account auth. Pulled out as its own enum so the wiring decision
+/// (RO ⇒ scope-restricted provider, otherwise key-file) has a unit test that
+/// doesn't require touching object_store's builder internals.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SaCredentialStrategy<'a> {
+    /// Use our own `ScopedTokenProvider`, which mints a token via
+    /// `service_account_scope(read_only=true)` ⇒ devstorage.read_only.
+    /// object_store then signs every request with that bearer, so even
+    /// internal-to-object_store code paths cannot perform writes.
+    ScopedProvider,
+    /// Hand object_store the SA key file path and let it manage its own
+    /// token (cloud-platform scope) — historical behaviour for non-RO mode.
+    KeyFile(&'a str),
+    /// Neither RO nor a usable key-file path; fall through to whatever
+    /// object_store discovers via ADC.
+    DefaultDiscovery,
+}
+
+pub fn choose_sa_credential_strategy(
+    read_only: bool,
+    credentials_path: Option<&str>,
+) -> SaCredentialStrategy<'_> {
+    if read_only {
+        SaCredentialStrategy::ScopedProvider
+    } else if let Some(path) = credentials_path {
+        SaCredentialStrategy::KeyFile(path)
+    } else {
+        SaCredentialStrategy::DefaultDiscovery
+    }
+}
+
 enum GcsCredentials {
     ServiceAccount {
         client_email: String,
@@ -79,6 +124,47 @@ struct CachedToken {
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
+}
+
+// ---------------------------------------------------------------------------
+// CredentialProvider adapter for object_store
+// ---------------------------------------------------------------------------
+
+/// Bridges our own `GcsStorage::get_access_token` (which honours the
+/// `read_only` flag via `service_account_scope`) into the
+/// `object_store::CredentialProvider` shape. Used in read-only mode so
+/// that object_store's internal request signing uses the exact same
+/// scope-restricted bearer as our JSON-API path.
+struct ScopedTokenProvider {
+    storage: GcsStorage,
+}
+
+impl std::fmt::Debug for ScopedTokenProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopedTokenProvider")
+            .field("provider", &self.storage.config.name)
+            .field("read_only", &self.storage.config.read_only)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl object_store::CredentialProvider for ScopedTokenProvider {
+    type Credential = object_store::gcp::GcpCredential;
+
+    async fn get_credential(
+        &self,
+    ) -> object_store::Result<Arc<object_store::gcp::GcpCredential>> {
+        let bearer =
+            self.storage
+                .get_access_token()
+                .await
+                .map_err(|e| object_store::Error::Generic {
+                    store: "GCS",
+                    source: e.into(),
+                })?;
+        Ok(Arc::new(object_store::gcp::GcpCredential { bearer }))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +344,7 @@ impl GcsStorage {
         let now = chrono::Utc::now();
         let claims = serde_json::json!({
             "iss": client_email,
-            "scope": "https://www.googleapis.com/auth/cloud-platform",
+            "scope": service_account_scope(self.config.read_only),
             "aud": token_uri,
             "iat": now.timestamp(),
             "exp": (now + chrono::TimeDelta::hours(1)).timestamp(),
@@ -323,15 +409,28 @@ impl GcsStorage {
     fn create_store(&self, bucket: &str) -> Result<Box<dyn ObjectStore>> {
         let mut builder = GoogleCloudStorageBuilder::new().with_bucket_name(bucket);
 
-        // For service-account credentials pass the file explicitly so
-        // object_store can handle its own token lifecycle independently.
         if let GcsCredentials::ServiceAccount { .. } = self.credentials.as_ref() {
-            if let Some(path) = &self.credentials_path {
-                builder = builder.with_service_account_path(path);
+            match choose_sa_credential_strategy(
+                self.config.read_only,
+                self.credentials_path.as_deref(),
+            ) {
+                SaCredentialStrategy::ScopedProvider => {
+                    let provider: object_store::gcp::GcpCredentialProvider =
+                        Arc::new(ScopedTokenProvider {
+                            storage: self.clone(),
+                        });
+                    builder = builder.with_credentials(provider);
+                }
+                SaCredentialStrategy::KeyFile(path) => {
+                    builder = builder.with_service_account_path(path);
+                }
+                SaCredentialStrategy::DefaultDiscovery => {}
             }
         }
         // For authorized-user (ADC), object_store picks up credentials from
-        // the default ADC location automatically.
+        // the default ADC location automatically. ADC tokens are minted by
+        // `gcloud auth application-default login` with whatever scope the
+        // user authenticated with — see the docs for restricting RO mode.
 
         let store = builder
             .build()

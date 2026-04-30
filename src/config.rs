@@ -392,6 +392,13 @@ pub struct ProviderConfig {
     /// selected. Buckets are listed across every project in this list.
     #[serde(default)]
     pub oauth_projects: Vec<String>,
+    /// When true, this provider is wrapped in a `ReadOnlyStorage` decorator
+    /// at startup that hard-blocks every mutating operation (upload,
+    /// create_folder, delete_objects). The flag exists to give a single
+    /// place to guarantee that no destructive call slips through, no matter
+    /// what UI path a future bug might take.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 fn default_enabled() -> bool {
@@ -414,6 +421,7 @@ impl Default for ProviderConfig {
             enabled: true,
             gcs_auth_mode: GcsAuthMode::default(),
             oauth_projects: Vec::new(),
+            read_only: false,
         }
     }
 }
@@ -439,8 +447,8 @@ impl ProviderType {
     /// layout. For provider-aware UI code use `ProviderConfig::field_count`.
     pub fn field_count(&self) -> usize {
         match self {
-            ProviderType::S3 | ProviderType::Azure => 8,
-            ProviderType::GCS => 6,
+            ProviderType::S3 | ProviderType::Azure => 9,
+            ProviderType::GCS => 7,
         }
     }
 
@@ -471,6 +479,7 @@ const FIELDS_S3_AZURE: &[&str] = &[
     "Access Key *",
     "Secret Key *",
     "Allow HTTP (Optional)",
+    "Read-Only Mode",
 ];
 
 const FIELDS_GCS_SERVICE_ACCOUNT: &[&str] = &[
@@ -480,6 +489,7 @@ const FIELDS_GCS_SERVICE_ACCOUNT: &[&str] = &[
     "Project",
     "Bucket Name (Optional)",
     "Credentials Path (Optional)",
+    "Read-Only Mode",
 ];
 
 const FIELDS_GCS_GCLOUD_ADC: &[&str] = &[
@@ -488,6 +498,7 @@ const FIELDS_GCS_GCLOUD_ADC: &[&str] = &[
     "Auth Mode *",
     "ADC Status",
     "Selected Projects",
+    "Read-Only Mode",
 ];
 
 impl ProviderConfig {
@@ -510,6 +521,11 @@ impl ProviderConfig {
     /// Returns the display value for a config field by index.
     /// Provider-type and auth-mode aware.
     pub fn get_field_value(&self, index: usize) -> String {
+        // The Read-Only Mode field always sits at the tail of whichever
+        // layout this provider uses, so handle it uniformly here.
+        if self.is_read_only_field(index) {
+            return self.read_only.to_string();
+        }
         match self.provider_type {
             ProviderType::S3 | ProviderType::Azure => match index {
                 0 => self.name.clone(),
@@ -554,6 +570,19 @@ impl ProviderConfig {
         }
     }
 
+    /// Index of the Read-Only Mode field for this layout (always the last
+    /// field), or `None` if the index is out of range.
+    pub fn read_only_field_index(&self) -> usize {
+        self.field_count().saturating_sub(1)
+    }
+
+    /// Whether the given index points at the Read-Only Mode field. Centralised
+    /// so the cycle/value/edit code-paths agree on the same answer regardless
+    /// of provider type or auth mode.
+    pub fn is_read_only_field(&self, index: usize) -> bool {
+        index == self.read_only_field_index()
+    }
+
     /// Returns a mutable reference to the string field at the given index.
     /// Returns None for cycle/toggle fields, read-only fields, and actions.
     pub fn get_field_mut(&mut self, index: usize) -> Option<&mut String> {
@@ -590,6 +619,9 @@ impl ProviderConfig {
         if index == 1 {
             return true;
         } // Type field — always a cycle
+        if self.is_read_only_field(index) {
+            return true;
+        }
         match self.provider_type {
             ProviderType::S3 | ProviderType::Azure => index == 7, // Allow HTTP
             ProviderType::GCS => index == 2,                      // Auth Mode
@@ -602,6 +634,12 @@ impl ProviderConfig {
             return Some(format!(
                 "[ S3 | GCS | Azure ] - Current: {:?}",
                 self.provider_type
+            ));
+        }
+        if self.is_read_only_field(index) {
+            return Some(format!(
+                "[ true | false ] - Current: {} (blocks upload / new folder / delete)",
+                self.read_only
             ));
         }
         match (&self.provider_type, index) {

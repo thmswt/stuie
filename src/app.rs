@@ -1,7 +1,7 @@
 use crate::config::{Config, KeymapConfig, ProviderConfig, ProviderType, SettingsConfig};
 use crate::storage::gcs::GcsStorage;
 use crate::storage::s3::S3Storage;
-use crate::storage::{Bucket, Object, ProgressCallback, StorageBackend};
+use crate::storage::{Bucket, Object, ProgressCallback, ReadOnlyStorage, StorageBackend};
 use anyhow::Result;
 use object_store::path::Path as ObjectPath;
 use ratatui::style::{Color, Modifier, Style};
@@ -163,6 +163,21 @@ fn sidebar_item_level(item: &SidebarItem) -> u8 {
         SidebarItem::Provider(_) => 0,
         SidebarItem::Project { .. } => 1,
         SidebarItem::Bucket { .. } => 2,
+    }
+}
+
+/// Wrap `backend` in a `ReadOnlyStorage` decorator when the provider config
+/// has `read_only = true`. Centralised so the wrapping happens at exactly
+/// one place — there is no other code path that pushes a backend into
+/// `storage_providers`.
+fn maybe_read_only(
+    backend: Box<dyn StorageBackend>,
+    read_only: bool,
+) -> Box<dyn StorageBackend> {
+    if read_only {
+        Box::new(ReadOnlyStorage::new(backend))
+    } else {
+        backend
     }
 }
 
@@ -546,7 +561,10 @@ impl App {
             match provider_config.provider_type {
                 ProviderType::S3 => {
                     match S3Storage::new(provider_config.clone(), provider_index).await {
-                        Ok(storage) => storage_providers.push(Box::new(storage)),
+                        Ok(storage) => storage_providers.push(maybe_read_only(
+                            Box::new(storage),
+                            provider_config.read_only,
+                        )),
                         Err(e) => tracing::error!(
                             "Failed to initialize S3 provider {}: {}",
                             provider_config.name,
@@ -566,7 +584,10 @@ impl App {
                                     project_backfills.push((config_index, project.to_string()));
                                 }
                             }
-                            storage_providers.push(Box::new(storage));
+                            storage_providers.push(maybe_read_only(
+                                Box::new(storage),
+                                provider_config.read_only,
+                            ));
                         }
                         Err(e) => tracing::error!(
                             "Failed to initialize GCS provider {}: {}",
@@ -643,6 +664,28 @@ impl App {
     pub fn set_error(&mut self, msg: String) {
         tracing::error!("{}", msg);
         self.error_message = Some(msg);
+    }
+
+    /// `true` when the currently-active provider has been wrapped in
+    /// `ReadOnlyStorage`. Used to gate destructive keybindings before they
+    /// open a prompt — the storage layer will also reject the call, but
+    /// blocking at the UI avoids surfacing a confusing prompt-then-error.
+    pub fn active_provider_is_read_only(&self) -> bool {
+        self.active_provider_index
+            .and_then(|i| self.storage_providers.get(i))
+            .is_some_and(|p| p.is_read_only())
+    }
+
+    fn set_read_only_blocked_error(&mut self, action: &str) {
+        let name = self
+            .active_provider_index
+            .and_then(|i| self.storage_providers.get(i))
+            .map(|p| p.name().to_string())
+            .unwrap_or_default();
+        self.set_error(format!(
+            "Provider '{}' is read-only — {} blocked.",
+            name, action
+        ));
     }
 
     pub async fn update_tasks(&mut self) {
@@ -1207,8 +1250,12 @@ impl App {
                 }
                 crossterm::event::KeyCode::Char('n') => {
                     if self.active_pane == Pane::Main && self.current_bucket.is_some() {
-                        self.input_mode = InputMode::CreateFolderPrompt;
-                        self.prompt_input = String::new();
+                        if self.active_provider_is_read_only() {
+                            self.set_read_only_blocked_error("create folder");
+                        } else {
+                            self.input_mode = InputMode::CreateFolderPrompt;
+                            self.prompt_input = String::new();
+                        }
                     }
                 }
                 crossterm::event::KeyCode::Char('d') => {
@@ -1225,12 +1272,16 @@ impl App {
                 }
                 crossterm::event::KeyCode::Char('u') => {
                     if self.active_pane == Pane::Main && self.current_bucket.is_some() {
-                        self.input_mode = InputMode::UploadPrompt;
-                        self.prompt_input = String::new();
-                        // Reset file explorer to home directory
-                        let home_dir =
-                            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                        let _ = self.file_explorer.set_cwd(home_dir);
+                        if self.active_provider_is_read_only() {
+                            self.set_read_only_blocked_error("upload");
+                        } else {
+                            self.input_mode = InputMode::UploadPrompt;
+                            self.prompt_input = String::new();
+                            // Reset file explorer to home directory
+                            let home_dir =
+                                dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                            let _ = self.file_explorer.set_cwd(home_dir);
+                        }
                     }
                 }
                 crossterm::event::KeyCode::Char('x') | crossterm::event::KeyCode::Delete => {
@@ -1238,7 +1289,11 @@ impl App {
                         && (!self.selected_paths.is_empty()
                             || self.main_list_state.selected().is_some())
                     {
-                        self.input_mode = InputMode::DeleteConfirmation;
+                        if self.active_provider_is_read_only() {
+                            self.set_read_only_blocked_error("delete");
+                        } else {
+                            self.input_mode = InputMode::DeleteConfirmation;
+                        }
                     }
                 }
                 crossterm::event::KeyCode::Char(' ') => {
@@ -1702,6 +1757,8 @@ impl App {
                                         ProviderType::Azure => ProviderType::S3,
                                     };
                                     clamp_selected_field_index(state);
+                                } else if provider.is_read_only_field(state.selected_field_index) {
+                                    provider.read_only = !provider.read_only;
                                 } else if provider.is_cycle_field(state.selected_field_index) {
                                     match (&provider.provider_type, state.selected_field_index) {
                                         (ProviderType::S3 | ProviderType::Azure, 7) => {
@@ -1734,6 +1791,8 @@ impl App {
                                         ProviderType::Azure => ProviderType::GCS,
                                     };
                                     clamp_selected_field_index(state);
+                                } else if provider.is_read_only_field(state.selected_field_index) {
+                                    provider.read_only = !provider.read_only;
                                 } else if provider.is_cycle_field(state.selected_field_index) {
                                     match (&provider.provider_type, state.selected_field_index) {
                                         (ProviderType::S3 | ProviderType::Azure, 7) => {

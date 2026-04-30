@@ -225,29 +225,33 @@ fn legacy_gcs_config_deserializes_with_defaults() {
 }
 
 #[test]
-fn gcs_service_account_has_six_fields() {
+fn gcs_service_account_layout() {
     let pc = ProviderConfig {
         provider_type: ProviderType::GCS,
         gcs_auth_mode: GcsAuthMode::ServiceAccount,
         ..ProviderConfig::default()
     };
-    assert_eq!(pc.field_count(), 6);
+    // 6 provider-specific fields + 1 trailing Read-Only Mode field
+    assert_eq!(pc.field_count(), 7);
     assert_eq!(pc.field_names()[0], "Name *");
     assert_eq!(pc.field_names()[2], "Auth Mode *");
     assert_eq!(pc.field_names()[3], "Project");
+    assert_eq!(pc.field_names()[6], "Read-Only Mode");
 }
 
 #[test]
-fn gcs_gcloud_adc_has_five_fields() {
+fn gcs_gcloud_adc_layout() {
     let pc = ProviderConfig {
         provider_type: ProviderType::GCS,
         gcs_auth_mode: GcsAuthMode::GcloudAdc,
         ..ProviderConfig::default()
     };
-    assert_eq!(pc.field_count(), 5);
+    // 5 provider-specific fields + 1 trailing Read-Only Mode field
+    assert_eq!(pc.field_count(), 6);
     assert_eq!(pc.field_names()[2], "Auth Mode *");
     assert_eq!(pc.field_names()[3], "ADC Status");
     assert_eq!(pc.field_names()[4], "Selected Projects");
+    assert_eq!(pc.field_names()[5], "Read-Only Mode");
 }
 
 #[test]
@@ -287,6 +291,98 @@ fn gcs_project_count_is_rendered_in_selected_projects_field() {
     assert!(v.contains("2 selected"));
     assert!(v.contains("proj-a"));
     assert!(v.contains("proj-b"));
+}
+
+#[test]
+fn read_only_field_default_is_false_for_every_provider_type() {
+    for pt in [ProviderType::S3, ProviderType::GCS, ProviderType::Azure] {
+        let pc = ProviderConfig {
+            provider_type: pt.clone(),
+            ..ProviderConfig::default()
+        };
+        assert!(!pc.read_only, "read_only must default to false for {:?}", pt);
+    }
+}
+
+#[test]
+fn read_only_field_is_last_and_a_cycle_field_for_every_layout() {
+    let layouts = [
+        ProviderConfig {
+            provider_type: ProviderType::S3,
+            ..ProviderConfig::default()
+        },
+        ProviderConfig {
+            provider_type: ProviderType::Azure,
+            ..ProviderConfig::default()
+        },
+        ProviderConfig {
+            provider_type: ProviderType::GCS,
+            gcs_auth_mode: GcsAuthMode::ServiceAccount,
+            ..ProviderConfig::default()
+        },
+        ProviderConfig {
+            provider_type: ProviderType::GCS,
+            gcs_auth_mode: GcsAuthMode::GcloudAdc,
+            ..ProviderConfig::default()
+        },
+    ];
+    for pc in &layouts {
+        let last_idx = pc.field_count() - 1;
+        assert_eq!(
+            pc.read_only_field_index(),
+            last_idx,
+            "Read-Only field must be the last field for {:?}/{:?}",
+            pc.provider_type,
+            pc.gcs_auth_mode,
+        );
+        assert!(pc.is_read_only_field(last_idx));
+        assert!(pc.is_cycle_field(last_idx));
+        assert!(pc.cycle_field_hint(last_idx).is_some());
+        assert_eq!(pc.field_names()[last_idx], "Read-Only Mode");
+        assert_eq!(pc.get_field_value(last_idx), "false");
+    }
+}
+
+#[test]
+fn read_only_value_renders_as_true_when_set() {
+    let pc = ProviderConfig {
+        provider_type: ProviderType::S3,
+        read_only: true,
+        ..ProviderConfig::default()
+    };
+    assert_eq!(pc.get_field_value(pc.read_only_field_index()), "true");
+}
+
+#[test]
+fn legacy_config_without_read_only_deserializes_with_false() {
+    // A config file from before the RO flag existed: must round-trip with
+    // read_only defaulting to false (not Some/None).
+    let json = r#"{
+        "providers": [{
+            "name": "s3-prod",
+            "provider_type": "S3",
+            "region": "us-east-1"
+        }]
+    }"#;
+    let cfg: Config = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(cfg.providers.len(), 1);
+    assert!(!cfg.providers[0].read_only);
+}
+
+#[test]
+fn read_only_round_trips_through_serde() {
+    let cfg = Config {
+        providers: vec![ProviderConfig {
+            name: "s3-readonly".into(),
+            provider_type: ProviderType::S3,
+            read_only: true,
+            ..ProviderConfig::default()
+        }],
+        ..Config::default()
+    };
+    let json = serde_json::to_string(&cfg).expect("serialize");
+    let parsed: Config = serde_json::from_str(&json).expect("deserialize");
+    assert!(parsed.providers[0].read_only);
 }
 
 #[test]

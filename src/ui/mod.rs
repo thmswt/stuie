@@ -140,23 +140,33 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     } else {
                         "\u{25b6}"
                     };
+                    let ro = provider.is_read_only();
                     if show_icons {
                         let picon = icons::provider_icon(&provider.provider_type());
-                        ListItem::new(Line::from(vec![
+                        let mut spans = vec![
                             Span::raw(format!("{} ", expand_icon)),
                             Span::styled(
                                 format!("{} ", picon.symbol),
                                 Style::default().fg(picon.color),
                             ),
                             Span::raw(format!("{}", provider.name())),
-                        ]))
-                        .style(Style::default().add_modifier(Modifier::BOLD))
+                        ];
+                        if ro {
+                            spans.push(Span::styled(
+                                " [RO]",
+                                Style::default().fg(theme.warning),
+                            ));
+                        }
+                        ListItem::new(Line::from(spans))
+                            .style(Style::default().add_modifier(Modifier::BOLD))
                     } else {
+                        let suffix = if ro { " [RO]" } else { "" };
                         ListItem::new(format!(
-                            "{} ({:?} - {})",
+                            "{} ({:?} - {}){}",
                             expand_icon,
                             provider.provider_type(),
-                            provider.name()
+                            provider.name(),
+                            suffix
                         ))
                         .style(Style::default().add_modifier(Modifier::BOLD))
                     }
