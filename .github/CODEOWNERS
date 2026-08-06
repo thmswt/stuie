@@ -1,0 +1,21 @@
+# Code owners for stuie.
+#
+# These owners are automatically requested for review when someone opens
+# a pull request that modifies matching files. The last matching pattern
+# in the file wins, so put more specific patterns below the generic ones.
+#
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything.
+*                          @thmswt
+
+# Anything that affects release, CI, security posture, or governance
+# wants an explicit nudge to the maintainer even if the diff is tiny.
+/.github/                  @thmswt
+/CODEOWNERS                @thmswt
+/CONTRIBUTING.md           @thmswt
+/CODE_OF_CONDUCT.md        @thmswt
+/SECURITY.md               @thmswt
+/LICENSE                   @thmswt
+/Cargo.toml                @thmswt
+/Cargo.lock                @thmswt

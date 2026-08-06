@@ -2,4 +2,11 @@
 
 /logs
 
+/docs
+
 .DS_Store
+
+# Per-developer lefthook overrides — merges over lefthook.yml so each
+# contributor can add private hooks (e.g., a local `cargo test`) without
+# committing them.
+/lefthook-local.yml

@@ -1,0 +1,48 @@
+# cargo-release configuration.
+#
+# Run `cargo release <patch|minor|major>` to dry-run the release
+# (cargo-release does NOT publish unless you pass `--execute`). See
+# CONTRIBUTING.md § "Releasing (maintainers only)" for the full
+# walkthrough.
+#
+# Reference: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+
+# Only release from main — protects against accidental tags on a
+# feature branch.
+allow-branch = ["main"]
+
+# Single bump+changelog commit, matching our Conventional Commits style.
+# Type is `chore` because release commits don't change behaviour.
+pre-release-commit-message = "chore(release): v{{version}}"
+tag-message                = "v{{version}}"
+tag-name                   = "v{{version}}"
+tag-prefix                 = ""
+
+# We sign neither commits nor tags; DCO sign-off (handled by `git
+# commit -s`) is what we enforce. Revisit if/when we adopt sigstore.
+sign-commit = false
+sign-tag    = false
+
+# Push the tag and the bump commit to origin after a successful release.
+push = true
+
+# Publish to crates.io as part of the release. Requires
+# `cargo login` to have been run with a token that has publish rights.
+# Set to `false` to bump+tag without publishing (useful for the very
+# first release, or for dry-runs).
+publish = true
+
+# CHANGELOG.md edits driven by the Keep-a-Changelog template's
+# sentinel comments. cargo-release applies these in order *before*
+# the release commit, so the same commit carries the version bump
+# and the corresponding changelog rollover.
+pre-release-replacements = [
+    # Stamp the date and version on the current Unreleased section.
+    { file = "CHANGELOG.md", search = "Unreleased",       replace = "{{version}}", min = 1 },
+    { file = "CHANGELOG.md", search = "ReleaseDate",      replace = "{{date}}",    min = 1 },
+    # Re-open a fresh empty Unreleased section for the next dev cycle.
+    { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
+    # Update the comparison link footer.
+    { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/thmswt/stuie/compare/{{tag_name}}...HEAD", exactly = 1 },
+    { file = "CHANGELOG.md", search = "HEAD\\.\\.\\.HEAD", replace = "{{tag_name}}...HEAD", min = 0 },
+]

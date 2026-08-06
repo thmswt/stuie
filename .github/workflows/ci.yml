@@ -27,12 +27,28 @@ jobs:
         # Run only the self-contained test suites. The MinIO suite
         # (tests/test_s3_provider.rs) requires a live server and must be run
         # manually with: cargo test --test test_s3_provider
-        run: cargo test --lib --test config_tests --test ui_utils_tests --test app_tests --verbose
+        run: cargo test --lib --test config_tests --test ui_utils_tests --test app_tests --test test_read_only_storage --test test_gcs_scope --verbose
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the version declared in Cargo.toml's `rust-version`.
+      # When MSRV is bumped, update this and the docs in CONTRIBUTING.md
+      # in the same commit so they don't drift.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - name: Build on MSRV
+        run: cargo build --verbose
+      - name: Test on MSRV
+        run: cargo test --lib --test config_tests --test ui_utils_tests --test app_tests --test test_read_only_storage --test test_gcs_scope --verbose
 
   fmt:
-    name: Formatting (advisory)
+    name: Formatting
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,13 +57,46 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: Clippy (advisory)
+    name: Clippy
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --lib --tests
+      # Lints policy lives in Cargo.toml's [lints.clippy] table — the
+      # `all` group is denied repo-wide, so a plain `cargo clippy` run
+      # is enough to catch new findings without needing -D warnings here.
+      - run: cargo clippy --all-targets
+
+  s3-integration:
+    name: S3 integration (MinIO)
+    runs-on: ubuntu-latest
+    # MinIO startup + seed + tests is normally sub-minute; cap the job
+    # to keep a stuck container from burning runner hours.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: s3-integration
+
+      - name: Start MinIO and seed test data
+        # Reuses the same script developers run locally — single source
+        # of truth for the test fixture (bucket layout, credentials).
+        # Uses hardcoded minioadmin/minioadmin against a throwaway local
+        # MinIO; no GitHub secrets involved, safe on PRs from forks.
+        run: ./tests/minio_setup.sh
+
+      - name: Run S3 integration tests
+        run: cargo test --test test_s3_provider --verbose
+
+      - name: Tear down MinIO
+        if: always()
+        run: ./tests/minio_teardown.sh
+
+      - name: Dump MinIO logs on failure
+        if: failure()
+        run: docker logs stuie-minio || true

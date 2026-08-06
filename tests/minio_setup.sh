@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# Clean up any leftover container from a previous run so this script
+# is idempotent. Safe in CI (no-op on a fresh runner) and saves the
+# manual teardown step locally.
+docker rm -f stuie-minio >/dev/null 2>&1 || true
+
 echo "Starting MinIO..."
 docker run -d --name stuie-minio -p 9000:9000 -p 9001:9001 \
   -e "MINIO_ROOT_USER=minioadmin" \

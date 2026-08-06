@@ -1,0 +1,146 @@
+name: Bug report
+description: Something isn't working as expected.
+title: "bug: <short description>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in
+        the fields below — the more we know, the faster we can fix it.
+
+        **Before submitting**: please make sure you have **redacted all
+        credentials** (`access_key_id`, `secret_access_key`,
+        service-account JSON contents, sensitive `project` or bucket
+        names) from any config or logs you paste.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-paragraph description of the problem.
+      placeholder: STUIE crashes when I press `u` on a GCS bucket while…
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps so we can reproduce the bug locally.
+      placeholder: |
+        1. Start STUIE with `cargo run`
+        2. Select the "Prod GCS" provider
+        3. Press `u` to upload a 2 GB file
+        4. Observe the crash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      placeholder: Upload should complete and the new object should appear in the file list.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the error message verbatim if there is one.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Storage provider
+      description: Which provider were you using when the bug occurred?
+      multiple: true
+      options:
+        - AWS S3
+        - MinIO / S3-compatible
+        - Google Cloud Storage (Service Account)
+        - Google Cloud Storage (Gcloud ADC)
+        - Azure Blob Storage (stub — known unimplemented)
+        - Not provider-specific (UI / config / startup)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: read_only
+    attributes:
+      label: Was the affected provider in read-only mode?
+      options:
+        - "No"
+        - "Yes"
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: stuie_version
+    attributes:
+      label: STUIE version
+      description: Output of `stuie --version`, or the commit SHA you built from.
+      placeholder: 0.1.0 (commit abc1234)
+    validations:
+      required: true
+
+  - type: input
+    id: rust_version
+    attributes:
+      label: Rust toolchain
+      description: Output of `rustc --version`.
+      placeholder: rustc 1.85.0 (stable)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      multiple: true
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (please specify in "additional context")
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal emulator
+      description: Including version if you know it. Nerd Font support matters for icon-rendering bugs.
+      placeholder: WezTerm 20240203 / Alacritty 0.13 / iTerm2 3.5
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Redacted config excerpt
+      description: |
+        Paste the relevant provider section from `~/.config/stuie/config.json`
+        with **all credentials replaced by `***REDACTED***`**. Skip this
+        field if the bug isn't config-related.
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant snippet from the log file (path depends on platform —
+        currently `./logs/`). Strip credentials and bucket names you
+        consider sensitive.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — screenshots, related issues, recent changes you made.

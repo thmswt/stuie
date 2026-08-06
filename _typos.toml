@@ -1,0 +1,30 @@
+# Project-specific allowlist for the `typos` spell-checker.
+#
+# Reference: https://github.com/crate-ci/typos/blob/master/docs/reference.md
+#
+# This file should grow only when typos surfaces a real false positive
+# during normal use — not pre-emptively. The point of the tool is
+# catching real typos, so be stingy about additions.
+
+[default]
+# `extend-words` is for terms typos miscategorises as misspellings of
+# other words. Map each one to itself so it's accepted unchanged.
+extend-words = { stuie = "stuie", thmswt = "thmswt" }
+
+# Cloud-storage terminology and identifiers we frequently mention in
+# code, tests, and docs. Most of these are real English to typos; the
+# few that aren't (e.g. ARN-as-a-word) get added here as needed.
+[default.extend-identifiers]
+# IAM / AWS surface area
+arn = "arn"
+iam = "iam"
+sts = "sts"
+# GCP surface
+gcs = "gcs"
+gcp = "gcp"
+# `MinIO` lowercased ends up in URLs and bucket names
+minio = "minio"
+
+# Files we don't want scanned at all.
+[files]
+extend-exclude = ["Cargo.lock", "logs/", "target/"]

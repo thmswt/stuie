@@ -1,0 +1,76 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    ":enableVulnerabilityAlertsWithLabel(security)"
+  ],
+  "timezone": "Europe/Berlin",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rebaseWhen": "behind-base-branch",
+  "platformAutomerge": true,
+  "rangeStrategy": "bump",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "vulnerabilityAlerts": {
+    "labels": ["security", "dependencies"],
+    "automerge": false,
+    "schedule": []
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "Group all aws-sdk-* / aws-config crates so they bump together — they release in lockstep and mixing versions causes API mismatches.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["aws-*"],
+      "groupName": "aws-sdk"
+    },
+    {
+      "description": "Group the TUI stack (ratatui, crossterm, ratatui-explorer) so UI updates land as one PR.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["ratatui", "ratatui-explorer", "crossterm"],
+      "groupName": "tui stack"
+    },
+    {
+      "description": "Manual-review crates: load-bearing dependencies that have regressed on minor bumps in the past. Never auto-merge; always assign maintainer.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "object_store",
+        "aws-sdk-s3",
+        "aws-config",
+        "ratatui",
+        "ratatui-explorer"
+      ],
+      "automerge": false,
+      "labels": ["dependencies", "review-required"],
+      "reviewers": ["thmswt"]
+    },
+    {
+      "description": "Auto-merge patch-level dev-dependency bumps once CI is green — they only affect tests.",
+      "matchManagers": ["cargo"],
+      "matchDepTypes": ["dev-dependencies"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Auto-merge GitHub Actions digest pins and patch bumps. Actions are pinned to SHAs (supply-chain hardening), so digest PRs are mostly mechanical.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest", "patch"],
+      "automerge": true,
+      "groupName": "github-actions (patch)"
+    },
+    {
+      "description": "Bundle GitHub Actions minor and major bumps into a single weekly PR for review.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "major"],
+      "groupName": "github-actions (minor/major)"
+    }
+  ]
+}

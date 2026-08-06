@@ -2,6 +2,43 @@
 name = "stuie"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+authors = ["Thomas Weit <me@thomas-weit.de>"]
+description = "Storage Terminal UI Explorer — interactive TUI for browsing AWS S3, MinIO, and Google Cloud Storage from the terminal."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/thmswt/stuie"
+homepage = "https://github.com/thmswt/stuie"
+documentation = "https://github.com/thmswt/stuie#readme"
+keywords = ["s3", "gcs", "tui", "object-storage", "ratatui"]
+categories = ["command-line-utilities", "filesystem"]
+# Files inside the repo that aren't part of the published .crate package.
+# .gitignore already excludes /target and /logs from git, so they don't
+# reach `cargo publish` either; this list covers tracked files we don't
+# want users to download (planning docs, governance/CI metadata).
+exclude = [
+    ".github/",
+    "PLAN.md",
+    "examples/",
+    "tests/minio_setup.sh",
+    "tests/minio_teardown.sh",
+]
+
+# The release pipeline (cargo-dist, distributed as the `dist` binary)
+# is configured in `dist-workspace.toml`, NOT here — dist only reads
+# these keys from workspace metadata and silently ignores a
+# `[package.metadata.dist]` table. See that file and the "Releasing"
+# section in CONTRIBUTING.md.
+
+[lints.clippy]
+# Default-warn group is denied repo-wide; specific lints we don't want
+# to enforce are allow-listed below with a reason.
+all = { level = "deny", priority = -1 }
+
+# `collapsible_if`'s suggested fix uses let-chains (`if let X = y && z`),
+# stabilised in Rust 1.88. Our MSRV is 1.85, so applying the fix would
+# silently break the floor. Keep nested `if let` blocks.
+collapsible_if = "allow"
 
 [dependencies]
 anyhow = "1.0.102"
@@ -25,5 +62,13 @@ futures = "0.3.31"
 tokio-util = { version = "0.7.13", features = ["io"] }
 arboard = "3.6.1"
 devicons = "0.6"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 jsonwebtoken = "9"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

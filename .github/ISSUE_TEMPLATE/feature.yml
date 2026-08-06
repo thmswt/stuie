@@ -1,0 +1,64 @@
+name: Feature request
+description: Suggest a new capability or enhancement.
+title: "feat: <short description>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest an improvement.
+
+        For larger changes (a new provider, a new pane, a config-schema
+        change) please open a [Discussion](https://github.com/thmswt/stuie/discussions)
+        first so we can align on the shape before code is written.
+        Smaller UX or quality-of-life ideas can go straight here.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the user-facing pain point or limitation, not the implementation.
+      placeholder: |
+        When I'm browsing a bucket with thousands of objects I can't…
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like STUIE to behave? Include keybindings, UI changes, config keys, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why you rejected them. "None" is a valid answer.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which area of the project does this touch?
+      multiple: true
+      options:
+        - TUI / keybindings / navigation
+        - Configuration & provider management
+        - S3 / S3-compatible backend
+        - GCS backend
+        - Azure backend
+        - Read-only mode / safety
+        - Performance
+        - Packaging / distribution
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Mockups, screenshots from other tools, links to relevant docs, etc.

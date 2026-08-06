@@ -1,0 +1,40 @@
+# lefthook configuration — opt-in pre-commit hooks for stuie.
+#
+# Install once:    lefthook install
+# Skip a commit:   LEFTHOOK=0 git commit ...
+# Skip one hook:   LEFTHOOK_EXCLUDE=clippy git commit ...
+# Per-dev overrides: drop a `lefthook-local.yml` next to this file
+# (gitignored) — fields there merge over what's defined here.
+#
+# Reference: https://lefthook.dev/configuration/
+
+# Apply to a clean copy of the index, not the working tree, so
+# unstaged changes never influence what gets checked.
+assert_lefthook_installed: true
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      # Only spin up cargo when Rust files are actually staged.
+      glob: "*.rs"
+      # `--check` exits non-zero on any diff and prints what would
+      # change; we never auto-format on commit because that surprises
+      # the contributor and re-staging gets lost.
+      run: cargo fmt --all -- --check
+
+    clippy:
+      glob: "*.rs"
+      # Lint policy lives in Cargo.toml's [lints.clippy] table:
+      # `all` is denied repo-wide, `collapsible_if` is allowed for
+      # MSRV reasons. So a plain clippy run is enough.
+      run: cargo clippy --all-targets --quiet
+
+    typos:
+      # Run on every commit, not just code changes — the most common
+      # typo source is README/CHANGELOG/docs prose.
+      # Project-specific allowlist lives in _typos.toml.
+      # Skip transparently if `typos` isn't installed locally; the
+      # hook is opt-in, and we don't want it to block contributors
+      # who haven't set up the optional tool yet.
+      run: command -v typos >/dev/null 2>&1 && typos {staged_files} || true

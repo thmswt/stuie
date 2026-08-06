@@ -1,0 +1,40 @@
+name: Question
+description: Ask a usage or clarification question. Prefer Discussions if available.
+title: "question: <short description>"
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If [GitHub Discussions](https://github.com/thmswt/stuie/discussions)
+        is enabled, please ask there first — questions get more
+        visibility and are easier to find later. Use this template if
+        Discussions is unavailable or if your question turns out to
+        require a tracked answer.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Be specific. Include what you've already tried.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Storage provider (if relevant)
+      multiple: true
+      options:
+        - AWS S3
+        - MinIO / S3-compatible
+        - Google Cloud Storage (Service Account)
+        - Google Cloud Storage (Gcloud ADC)
+        - Azure Blob Storage
+        - Not provider-specific
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What you've tried so far
+      description: Documentation you read, commands you ran, config you tried — saves a round-trip.

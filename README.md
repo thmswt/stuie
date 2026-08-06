@@ -3,7 +3,7 @@
 A modern, interactive TUI application for managing cloud object storage from your terminal. Browse buckets, upload/download files, and manage objects across multiple cloud storage providers with a keyboard-driven interface.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/thmswt/stuie/ci.yml?branch=main&logo=github&label=CI)](https://github.com/thmswt/stuie/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/Rust-2026_edition-orange)
+![Rust](https://img.shields.io/badge/Rust-1.85%2B%20(2024%20edition)-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 ## Features
@@ -136,6 +136,103 @@ These are planned but not yet implemented:
 - **S3 STS-backed read-only enforcement** - S3 has no OAuth scope concept, so credential-side enforcement would require minting an STS session token with an inline `Deny` policy for write actions. Today RO mode for S3 relies on the wrapper plus the user's IAM hygiene.
 - **Object versioning awareness** - listing/operating on object versions isn't surfaced.
 - **Cross-provider copy/move** - currently you can download then upload manually; a single-step transfer is not implemented.
+
+## Security
+
+STUIE handles cloud storage credentials, so a few things are worth being
+explicit about up front.
+
+### No telemetry
+
+STUIE makes outbound network calls **only** to the storage endpoints you
+configure (your S3 endpoint, GCS API, OAuth token endpoints for ADC).
+It does not:
+
+- Send analytics, usage metrics, or crash reports anywhere.
+- Check for newer versions of itself.
+- Transmit credentials, bearer tokens, or signed URLs to any host other
+  than the provider in your config.
+
+If you observe network activity that doesn't match the provider you're
+using, that's a bug — please report it via the channel in
+[`SECURITY.md`](SECURITY.md).
+
+### Credential storage
+
+`~/.config/stuie/config.json` stores static credentials (S3 access keys,
+GCS service-account paths) **in plaintext**. They are not encrypted at
+rest. The trust boundary is your OS user account: anything that user
+can read on disk is considered accessible.
+
+Recommended hygiene:
+
+```bash
+chmod 600 ~/.config/stuie/config.json
+```
+
+Prefer short-lived / federated credentials over long-lived static keys
+where the provider supports it:
+
+- **GCS:** use `GcloudAdc` mode — no secrets land in our config at all.
+- **AWS:** assume an IAM role via SSO / AWS-Vault and only populate the
+  config when needed.
+
+For production buckets, **enable Read-Only Mode** on the provider.
+That's the single most effective way to make a "wrong button" scenario
+non-destructive — see the *Read-Only Mode* section above for how it's
+enforced.
+
+OS-keychain integration to remove the plaintext-on-disk problem
+entirely is on the roadmap; see `PLAN.md`.
+
+### Reporting a vulnerability
+
+Use [GitHub Private Vulnerability Reporting](https://github.com/thmswt/stuie/security/advisories/new)
+or follow the process in [`SECURITY.md`](SECURITY.md). **Please do not
+open a public issue for security reports.**
+
+## Versioning & Stability
+
+STUIE follows [Semantic Versioning 2.0](https://semver.org/) with one
+caveat that matters while we're on `0.x`:
+
+> **On `0.x`, minor version bumps may include breaking changes.**
+> A bump from `0.1.y` to `0.2.0` is allowed to rename config keys,
+> change keybindings, or remove a CLI flag. Patch bumps (`0.1.y` →
+> `0.1.(y+1)`) are bug-fixes only.
+
+The SemVer contract covers:
+
+- The **config-file schema** (`~/.config/stuie/config.json`) — field
+  names, types, defaults.
+- The **CLI surface** — flag names, exit codes, environment variables
+  STUIE reads.
+- The **default keybindings** documented in the *Keyboard Shortcuts*
+  table above.
+- The **MSRV** declared in `Cargo.toml` (`rust-version`). Bumping the
+  MSRV is a minor-version event; see the policy in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md#msrv-bump-policy).
+
+The SemVer contract does **not** cover:
+
+- The on-screen layout or colour theme — these may shift between any
+  two releases.
+- Internal Rust API surface (the `stuie::` crate is published for the
+  binary but is not a stable library API; do not depend on it
+  programmatically).
+- Log file format and location.
+
+### Path to `1.0`
+
+`1.0` will be cut once **all** of the following are true:
+
+- The Azure Blob backend listed under *Pending Features* is implemented
+  (no more advertised-but-stub providers).
+- The config-file schema has been stable for at least one minor cycle.
+- All `[blocker]` items in `PLAN.md` are resolved.
+- CI has been green on `main` for 30 consecutive days.
+
+Until then, expect occasional minor-version churn.
 
 ## License
 
