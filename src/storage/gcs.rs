@@ -173,8 +173,6 @@ impl object_store::CredentialProvider for ScopedTokenProvider {
 struct BucketListResponse {
     #[serde(default)]
     items: Vec<BucketItem>,
-    #[serde(rename = "nextPageToken")]
-    next_page_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -450,10 +448,12 @@ impl GcsStorage {
                 return Ok(project.clone());
             }
         }
-        if let GcsCredentials::ServiceAccount { project_id, .. } = self.credentials.as_ref() {
-            if let Some(pid) = project_id {
-                return Ok(pid.clone());
-            }
+        if let GcsCredentials::ServiceAccount {
+            project_id: Some(pid),
+            ..
+        } = self.credentials.as_ref()
+        {
+            return Ok(pid.clone());
         }
         bail!(
             "No GCS project configured. Set the Project field in the provider config \
@@ -765,7 +765,7 @@ impl StorageBackend for GcsStorage {
             objects.push(Object {
                 path: meta.location,
                 is_dir: false,
-                size: meta.size as u64,
+                size: meta.size,
                 last_modified: meta.last_modified,
             });
         }
@@ -791,7 +791,7 @@ impl StorageBackend for GcsStorage {
             objects.push(Object {
                 path: meta.location,
                 is_dir: false,
-                size: meta.size as u64,
+                size: meta.size,
                 last_modified: meta.last_modified,
             });
         }

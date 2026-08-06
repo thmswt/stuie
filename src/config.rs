@@ -349,20 +349,15 @@ impl SettingsConfig {
     pub const FIELD_COUNT: usize = 7;
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub enum GcsAuthMode {
     /// Service-account JSON key referenced by `credentials_path`, or ADC
     /// detected automatically. Single-project behaviour (legacy).
+    #[default]
     ServiceAccount,
     /// Use the gcloud CLI's Application Default Credentials directly.
     /// No secrets are stored in the config; only the selected project IDs.
     GcloudAdc,
-}
-
-impl Default for GcsAuthMode {
-    fn default() -> Self {
-        GcsAuthMode::ServiceAccount
-    }
 }
 
 fn default_gcs_auth_mode() -> GcsAuthMode {

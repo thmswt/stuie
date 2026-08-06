@@ -207,7 +207,7 @@ async fn read_only_wrapper_passes_through_reads() {
         .download(
             "fake-bucket",
             &Path::from("k"),
-            &std::path::Path::new("/tmp/stuie-ro-test.bin"),
+            std::path::Path::new("/tmp/stuie-ro-test.bin"),
             noop_progress(),
         )
         .await

@@ -170,7 +170,7 @@ impl StorageBackend for S3Storage {
             objects.push(Object {
                 path: meta.location,
                 is_dir: false,
-                size: meta.size as u64,
+                size: meta.size,
                 last_modified: meta.last_modified,
             });
         }
@@ -197,7 +197,7 @@ impl StorageBackend for S3Storage {
             objects.push(Object {
                 path: meta.location,
                 is_dir: false,
-                size: meta.size as u64,
+                size: meta.size,
                 last_modified: meta.last_modified,
             });
         }

@@ -573,7 +573,7 @@ impl App {
                             if provider_config
                                 .project
                                 .as_ref()
-                                .map_or(true, |p| p.trim().is_empty())
+                                .is_none_or(|p| p.trim().is_empty())
                             {
                                 if let Some(project) = storage.detected_project_id() {
                                     project_backfills.push((config_index, project.to_string()));
@@ -945,37 +945,38 @@ impl App {
             crossterm::event::Event::Key(key) => {
                 self.handle_key(key.code, key.modifiers, event).await;
             }
-            crossterm::event::Event::Mouse(mouse) => {
+            crossterm::event::Event::Mouse(mouse)
                 if mouse.kind
-                    == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                {
-                    if let Some(area) = self.copy_button_area {
-                        if mouse.column >= area.x
-                            && mouse.column < area.x + area.width
-                            && mouse.row >= area.y
-                            && mouse.row < area.y + area.height
-                        {
-                            self.copy_path_to_clipboard();
-                        }
+                    == crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ) =>
+            {
+                if let Some(area) = self.copy_button_area {
+                    if mouse.column >= area.x
+                        && mouse.column < area.x + area.width
+                        && mouse.row >= area.y
+                        && mouse.row < area.y + area.height
+                    {
+                        self.copy_path_to_clipboard();
                     }
-                    if let Some(area) = self.error_copy_area {
-                        if self.error_message.is_some()
-                            && mouse.column >= area.x
-                            && mouse.column < area.x + area.width
-                            && mouse.row >= area.y
-                            && mouse.row < area.y + area.height
-                        {
-                            self.copy_error_to_clipboard();
-                        }
+                }
+                if let Some(area) = self.error_copy_area {
+                    if self.error_message.is_some()
+                        && mouse.column >= area.x
+                        && mouse.column < area.x + area.width
+                        && mouse.row >= area.y
+                        && mouse.row < area.y + area.height
+                    {
+                        self.copy_error_to_clipboard();
                     }
-                    if let Some(area) = self.task_copy_area {
-                        if mouse.column >= area.x
-                            && mouse.column < area.x + area.width
-                            && mouse.row >= area.y
-                            && mouse.row < area.y + area.height
-                        {
-                            self.copy_task_to_clipboard();
-                        }
+                }
+                if let Some(area) = self.task_copy_area {
+                    if mouse.column >= area.x
+                        && mouse.column < area.x + area.width
+                        && mouse.row >= area.y
+                        && mouse.row < area.y + area.height
+                    {
+                        self.copy_task_to_clipboard();
                     }
                 }
             }
@@ -1565,10 +1566,10 @@ impl App {
                         self.on_back();
                     }
                 }
-                crossterm::event::KeyCode::Left => {
-                    if !self.show_config_modal && self.active_pane == Pane::Sidebar {
-                        self.jump_sidebar_to_parent();
-                    }
+                crossterm::event::KeyCode::Left
+                    if !self.show_config_modal && self.active_pane == Pane::Sidebar =>
+                {
+                    self.jump_sidebar_to_parent();
                 }
                 _ => {}
             },

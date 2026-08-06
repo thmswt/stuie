@@ -149,7 +149,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                                 format!("{} ", picon.symbol),
                                 Style::default().fg(picon.color),
                             ),
-                            Span::raw(format!("{}", provider.name())),
+                            Span::raw(provider.name().to_string()),
                         ];
                         if ro {
                             spans.push(Span::styled(" [RO]", Style::default().fg(theme.warning)));
@@ -202,7 +202,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 project_id,
                 ..
             } => {
-                let is_last = raw_sidebar_items.get(i + 1).map_or(true, |next| {
+                let is_last = raw_sidebar_items.get(i + 1).is_none_or(|next| {
                     matches!(
                         next,
                         crate::app::SidebarItem::Provider(_)
@@ -455,11 +455,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let status_text = if let Some(last_task) = app.active_tasks.last() {
         match last_task.task_type {
             TaskType::Upload | TaskType::Download => {
-                let percent = if last_task.total_size > 0 {
-                    (last_task.bytes_transferred * 100) / last_task.total_size
-                } else {
-                    0
-                };
+                let percent = (last_task.bytes_transferred * 100)
+                    .checked_div(last_task.total_size)
+                    .unwrap_or(0);
                 let elapsed = last_task.start_time.elapsed().as_secs_f64();
                 let speed = if elapsed > 0.0 {
                     last_task.bytes_transferred as f64 / elapsed
@@ -1535,7 +1533,13 @@ pub fn format_hex(data: &[u8]) -> String {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if b >= 32 && b <= 126 { b as char } else { '.' })
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         lines.push(format!("{:48} | {}", hex.join(" "), ascii));
     }
