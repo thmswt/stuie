@@ -3,7 +3,7 @@
 A modern, interactive TUI application for managing cloud object storage from your terminal. Browse buckets, upload/download files, and manage objects across multiple cloud storage providers with a keyboard-driven interface.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/thmswt/stuie/ci.yml?branch=main&logo=github&label=CI)](https://github.com/thmswt/stuie/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/Rust-1.85%2B%20(2024%20edition)-orange)
+![Rust](https://img.shields.io/badge/Rust-2024%20edition-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 ## Features
@@ -19,7 +19,7 @@ A modern, interactive TUI application for managing cloud object storage from you
 
 ## Prerequisites
 
-- Rust 1.85+ and Cargo
+- A recent stable Rust toolchain (2024 edition) and Cargo
 - A Nerd Font installed in your terminal (for file icons)
 - Access to an S3-compatible storage provider and/or a GCS account
 
@@ -209,9 +209,6 @@ The SemVer contract covers:
   STUIE reads.
 - The **default keybindings** documented in the *Keyboard Shortcuts*
   table above.
-- The **MSRV** declared in `Cargo.toml` (`rust-version`). Bumping the
-  MSRV is a minor-version event; see the policy in
-  [`CONTRIBUTING.md`](CONTRIBUTING.md#msrv-bump-policy).
 
 The SemVer contract does **not** cover:
 

@@ -2,7 +2,6 @@
 name = "stuie"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
 authors = ["Thomas Weit <me@thomas-weit.de>"]
 description = "Storage Terminal UI Explorer — interactive TUI for browsing AWS S3, MinIO, and Google Cloud Storage from the terminal."
 license = "MIT"
@@ -18,10 +17,14 @@ categories = ["command-line-utilities", "filesystem"]
 # to enforce are allow-listed below with a reason.
 all = { level = "deny", priority = -1 }
 
-# `collapsible_if`'s suggested fix uses let-chains (`if let X = y && z`),
-# stabilised in Rust 1.88. Our MSRV is 1.85, so applying the fix would
-# silently break the floor. Keep nested `if let` blocks.
+# `collapsible_if`'s suggested fix uses let-chains (`if let X = y && z`).
+# Style choice: keep nested `if let` blocks.
 collapsible_if = "allow"
+
+# `#[async_trait]` expands `StorageBackend`'s methods into fns returning a
+# `Pin<Box<dyn Future>>` plus a `#[must_use]`, which trips this lint on
+# newer clippy. It's a macro-expansion artifact, not something in our code.
+double_must_use = "allow"
 
 [dependencies]
 anyhow = "1.0.102"

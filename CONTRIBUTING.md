@@ -51,10 +51,8 @@ can go straight to a PR.
 
 ### Prerequisites
 
-- **Rust 1.85 or newer** — pinned via `rust-version` in `Cargo.toml`
-  and verified by the `MSRV (1.85)` CI job. Stable channel is fine.
-
-  See [MSRV bump policy](#msrv-bump-policy) below before raising it.
+- **A recent stable Rust toolchain** (2024 edition). CI builds with
+  the current stable; there is no pinned MSRV.
 - **Cargo** (ships with Rust).
 - A **Nerd Font** installed in your terminal so the file-type icons
   render correctly.
@@ -273,49 +271,6 @@ to amend if a sign-off is missing.
   Unicode-DFS.
 - **Cross-platform.** Don't assume Linux paths or POSIX-only APIs.
   Crossterm and the `dirs` crate cover most of what we need.
-
----
-
-## MSRV bump policy
-
-The Minimum Supported Rust Version is currently **1.85**. It is enforced
-by the `MSRV (1.85)` CI job (`cargo build` + the unit-test suite on the
-pinned toolchain) and declared in three places that must move together:
-
-1. `rust-version = "1.85"` in `Cargo.toml`.
-2. `dtolnay/rust-toolchain@1.85.0` in `.github/workflows/ci.yml` (the
-   `msrv` job).
-3. The "Rust 1.85 or newer" line in `README.md` and the prerequisites
-   section of this file.
-
-### When you may bump MSRV
-
-- **Required dependency upgrade** that no longer supports the current
-  floor (Renovate will surface this on a routine version PR).
-- **A standard-library API stabilised in a newer version** that meaningfully
-  simplifies the code (e.g., `let-chains` in 1.88, `Option::is_none_or`
-  in 1.82). Convenience alone is not enough — it has to remove
-  meaningful complexity.
-- **Security fix** in a Rust release that we want to recommend.
-
-### Constraints on the bump
-
-- Don't bump past `stable - 6 months` without a strong reason; many
-  distros and CI environments lag.
-- A bump is its own dedicated PR (`chore(msrv): bump to 1.X`) — never
-  bundled into a feature commit.
-- Update all three locations above in the same commit, plus this
-  document, so they don't drift.
-
-### Acceptable workarounds inside the codebase
-
-If a clippy lint suggests a fix that would require a higher MSRV, prefer:
-
-1. `#[allow(...)]` at the call site with a one-line `// MSRV: ...`
-   comment, **or**
-2. Add the lint to the `[lints.clippy]` allow-list in `Cargo.toml` with
-   a comment explaining the MSRV reason (this is what we did for
-   `collapsible_if`, whose suggested let-chain fix needs 1.88).
 
 ---
 
