@@ -12,23 +12,6 @@ homepage = "https://github.com/thmswt/stuie"
 documentation = "https://github.com/thmswt/stuie#readme"
 keywords = ["s3", "gcs", "tui", "object-storage", "ratatui"]
 categories = ["command-line-utilities", "filesystem"]
-# Files inside the repo that aren't part of the published .crate package.
-# .gitignore already excludes /target and /logs from git, so they don't
-# reach `cargo publish` either; this list covers tracked files we don't
-# want users to download (planning docs, governance/CI metadata).
-exclude = [
-    ".github/",
-    "PLAN.md",
-    "examples/",
-    "tests/minio_setup.sh",
-    "tests/minio_teardown.sh",
-]
-
-# The release pipeline (cargo-dist, distributed as the `dist` binary)
-# is configured in `dist-workspace.toml`, NOT here — dist only reads
-# these keys from workspace metadata and silently ignores a
-# `[package.metadata.dist]` table. See that file and the "Releasing"
-# section in CONTRIBUTING.md.
 
 [lints.clippy]
 # Default-warn group is denied repo-wide; specific lints we don't want
@@ -67,8 +50,3 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 jsonwebtoken = "9"
-
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"

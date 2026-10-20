@@ -183,7 +183,7 @@ non-destructive — see the *Read-Only Mode* section above for how it's
 enforced.
 
 OS-keychain integration to remove the plaintext-on-disk problem
-entirely is on the roadmap; see `PLAN.md`.
+entirely would be a worthwhile future improvement.
 
 ### Reporting a vulnerability
 
@@ -217,8 +217,8 @@ The SemVer contract does **not** cover:
 
 - The on-screen layout or colour theme — these may shift between any
   two releases.
-- Internal Rust API surface (the `stuie::` crate is published for the
-  binary but is not a stable library API; do not depend on it
+- Internal Rust API surface (the `stuie::` library crate exists for the
+  binary and tests but is not a stable API; do not depend on it
   programmatically).
 - Log file format and location.
 
@@ -229,7 +229,6 @@ The SemVer contract does **not** cover:
 - The Azure Blob backend listed under *Pending Features* is implemented
   (no more advertised-but-stub providers).
 - The config-file schema has been stable for at least one minor cycle.
-- All `[blocker]` items in `PLAN.md` are resolved.
 - CI has been green on `main` for 30 consecutive days.
 
 Until then, expect occasional minor-version churn.
