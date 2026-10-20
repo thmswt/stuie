@@ -1,51 +1,51 @@
 # STUIE - Storage Terminal UI Explorer
 
-A modern, interactive TUI application for managing cloud object storage from your terminal. Browse buckets, upload/download files, and manage objects across multiple cloud storage providers with a keyboard-driven interface.
+A keyboard-driven terminal UI for browsing cloud object storage. Browse buckets, upload and download files, and manage objects across AWS S3, MinIO and Google Cloud Storage from one place.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/thmswt/stuie/ci.yml?branch=main&logo=github&label=CI)](https://github.com/thmswt/stuie/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-2024%20edition-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
+STUIE is a hobby project and is only distributed as source. Expect rough edges, and see [Limitations](#limitations) for what is not implemented yet.
+
 ## Features
 
-- **Multi-provider support** - Connect to AWS S3, MinIO (and other S3-compatible backends), and Google Cloud Storage simultaneously
-- **Interactive file browser** - Navigate buckets and objects with a multi-pane TUI layout (sidebar, file list, preview)
-- **Upload & download** - Transfer files with real-time progress tracking
-- **File operations** - Create folders, delete objects (batch), search/filter by filename
-- **Read-Only Mode** - Per-provider safety switch that hard-blocks every mutating operation (see below)
-- **GCS multi-project support** - Browse buckets across multiple GCP projects in a single provider via `gcloud` ADC
-- **Modern UI** - Color-coded file type icons (Nerd Fonts), mouse support, clipboard integration
-- **Configuration management** - In-app config editor for adding/editing storage providers
+- **Multiple providers at once** - AWS S3, MinIO (and other S3-compatible backends) and Google Cloud Storage side by side in one sidebar
+- **File browser** - Buckets and objects in a multi-pane layout: sidebar, file list and an optional preview pane
+- **Upload & download** - Files and folders, with progress tracking
+- **Object operations** - Create folders, delete objects (batch, with confirmation), filter by filename, copy a path to the clipboard
+- **Read-Only Mode** - A per-provider switch that hard-blocks every mutating operation ([details](#read-only-mode))
+- **GCS multi-project** - Browse buckets across several GCP projects in one provider through `gcloud` ADC
+- **Customisable** - Seven built-in themes, rebindable keys, Nerd Font icons and mouse support
+- **In-app configuration** - Add and edit providers, settings, theme and keybindings without leaving the UI
 
-## Prerequisites
+## Getting started
+
+### Prerequisites
 
 - A recent stable Rust toolchain (2024 edition) and Cargo
-- A Nerd Font installed in your terminal (for file icons)
-- Access to an S3-compatible storage provider and/or a GCS account
+- A [Nerd Font](https://www.nerdfonts.com/) set as your terminal font (for the file icons)
+- Access to an S3-compatible service and/or a GCS account
 
-## Installation
+STUIE is built and tested in CI on Linux and macOS. Windows is not covered by CI.
+
+### Build and run
 
 ```bash
 git clone https://github.com/thmswt/stuie.git
 cd stuie
-cargo build --release
+cargo run --release
 ```
 
-The binary will be at `./target/release/stuie`.
-
-## Usage
-
-```bash
-cargo run
-# or
-./target/release/stuie
-```
+The optimised binary ends up at `./target/release/stuie`. To put it on your `PATH`, run `cargo install --path .`.
 
 On first launch, press `c` to open the configuration modal and add a storage provider.
 
-### Configuration
+## Configuration
 
-STUIE stores its configuration at `~/.config/stuie/config.json`. Example with one S3 provider and one read-only GCS provider:
+Everything lives in `~/.config/stuie/config.json`. You can edit it by hand or through the in-app configuration modal (`c`), which has tabs for providers, settings, theme and keybindings.
+
+Example with one S3 provider and one read-only GCS provider:
 
 ```json
 {
@@ -74,29 +74,48 @@ STUIE stores its configuration at `~/.config/stuie/config.json`. Example with on
 }
 ```
 
-GCS supports two authentication modes:
+For MinIO or another S3-compatible service, use `"provider_type": "S3"`, set `endpoint` to its URL and set `allow_http` to `true` if it is served over plain HTTP.
+
+### GCS authentication
 
 - **`ServiceAccount`** - point `credentials_path` at a service-account JSON key (or set `GOOGLE_APPLICATION_CREDENTIALS`).
 - **`GcloudAdc`** - reuse the credentials from `gcloud auth application-default login`. Multi-project mode lets you list buckets across several projects.
 
-### Read-Only Mode
+### Settings, themes and keys
 
-Each provider has a `read_only` flag (toggleable from the config UI on the *Read-Only Mode* row, or editable directly in `config.json`). When set:
+| Setting | Default | Description |
+|---|---|---|
+| `show_icons` | `true` | Show Nerd Font file-type icons |
+| `confirm_delete` | `true` | Ask before deleting objects |
+| `preview_max_bytes` | `1024` | How much of a file the preview pane loads |
+| `log_to_file` / `log_file_path` | `false` / `~/.stuie/session.log` | Write a summary of finished tasks (uploads, downloads, deletes) to a file |
+| `diagnostics_enabled` / `diagnostics_log_dir` | `true` / `logs` | Write a diagnostics log (see below) |
 
-- The storage backend is wrapped in a `ReadOnlyStorage` decorator that returns an error for `upload`, `create_folder`, and `delete_objects` — guaranteeing no destructive call slips through, regardless of UI path.
-- The destructive keybindings (`n`, `u`, `x`/`Delete`) short-circuit with an inline error so you don't get a misleading prompt before the failure.
+These live under `"settings"` in `config.json`. Set the top-level `"theme"` key to one of `default`, `dracula`, `light`, `retro`, `ocean`, `solarized` or `nord`. Every key in the [shortcut table](#keyboard-shortcuts) can be changed under `"keymap"`.
+
+**Diagnostics log:** with the default settings, STUIE writes a daily-rotating `stuie.log` to a `logs/` directory **relative to where you launch it**. Set `diagnostics_log_dir` to an absolute path, or turn diagnostics off, if you do not want that. The log can contain bucket and object paths.
+
+## Read-Only Mode
+
+Each provider has a `read_only` flag. Toggle it on the *Read-Only Mode* row in the config UI, or edit `config.json` directly. When it is set:
+
+- The storage backend is wrapped in a `ReadOnlyStorage` decorator that returns an error for `upload`, `create_folder` and `delete_objects`, so no destructive call gets through regardless of the UI path.
+- The destructive keybindings (`n`, `u`, `x`/`Delete`) short-circuit with an inline error instead of showing a misleading prompt first.
 - The provider's sidebar row is badged `[RO]` in the warning colour.
-- **GCS service-account mode additionally restricts the access token's OAuth scope to `devstorage.read_only`.** This applies to both our JSON-API calls and the bearer handed to `object_store` via a custom `CredentialProvider`, so even a hypothetical bug bypassing the wrapper would be rejected by GCS itself with HTTP 403.
+- **GCS service-account mode additionally restricts the access token's OAuth scope to `devstorage.read_only`.** This applies to our JSON-API calls and to the bearer handed to `object_store` through a custom `CredentialProvider`. Even a bug that bypassed the wrapper would be rejected by GCS itself with HTTP 403.
 
-The intent is defense-in-depth for production buckets: the wrapper is the always-on guard, and credential-side scope restriction is the belt-and-braces second layer where the provider supports it.
+The wrapper is the always-on guard. Scope restriction is a second layer where the provider supports it. See [Limitations](#limitations) for where it does not.
 
-### Keyboard Shortcuts
+## Keyboard shortcuts
+
+These are the defaults. All of them can be rebound.
 
 | Key | Action |
 |---|---|
 | `q` | Quit |
 | `?` | Toggle help |
 | `c` | Configuration modal |
+| `a` | Add provider (in the configuration modal) |
 | `/` | Search / filter objects |
 | `Enter` | Select / open folder |
 | `Backspace` | Go back |
@@ -111,125 +130,49 @@ The intent is defense-in-depth for production buckets: the wrapper is the always
 | `y` | Copy path to clipboard |
 | `p` | Toggle preview pane |
 
-## Testing
+## Limitations
 
-Unit tests run without any external dependencies:
+Not implemented yet:
 
-```bash
-cargo test --test config_tests --test test_read_only_storage --test test_gcs_scope
-```
-
-The S3 integration tests use a local MinIO instance via Docker:
-
-```bash
-./tests/minio_setup.sh    # Start MinIO + seed test data
-cargo test
-./tests/minio_teardown.sh # Cleanup
-```
-
-## Pending Features
-
-These are planned but not yet implemented:
-
-- **Azure Blob Storage** - the provider type exists in config and shows up in the UI cycle, but the backend is a stub. Adding/enabling an Azure provider currently has no effect at runtime.
-- **GCS GcloudAdc read-only scope restriction** - service-account credentials get full credential-side enforcement in RO mode, but the gcloud-ADC refresh-token's scopes are baked in at `gcloud auth application-default login` time and can't be shrunk at request. Today this falls back to the wrapper-only guard. Workaround: re-authenticate gcloud with `--scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/cloud-platform.read-only`.
-- **S3 STS-backed read-only enforcement** - S3 has no OAuth scope concept, so credential-side enforcement would require minting an STS session token with an inline `Deny` policy for write actions. Today RO mode for S3 relies on the wrapper plus the user's IAM hygiene.
-- **Object versioning awareness** - listing/operating on object versions isn't surfaced.
-- **Cross-provider copy/move** - currently you can download then upload manually; a single-step transfer is not implemented.
+- **Azure Blob Storage** - the provider type exists in the config and in the UI cycle, but the backend is a stub. An Azure provider has no effect at runtime.
+- **GCS GcloudAdc read-only scope restriction** - service-account credentials get the OAuth scope restriction in Read-Only Mode, but the scopes of a gcloud ADC refresh token are fixed at `gcloud auth application-default login` time and cannot be narrowed per request. ADC providers fall back to the wrapper-only guard. Workaround: log in again with `--scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/cloud-platform.read-only`.
+- **S3 credential-side read-only enforcement** - S3 has no OAuth-scope equivalent. It would need an STS session token with an inline `Deny` policy for write actions. Today Read-Only Mode on S3 relies on the wrapper plus your IAM setup.
+- **Object versioning** - object versions are not listed or operated on.
+- **Cross-provider copy/move** - download then upload; there is no single-step transfer.
 
 ## Security
 
-STUIE handles cloud storage credentials, so a few things are worth being
-explicit about up front.
+STUIE handles cloud credentials, so it is worth being explicit about a few things. The full threat model is in [`SECURITY.md`](SECURITY.md).
 
-### No telemetry
+- **No telemetry.** STUIE only makes network calls to the storage endpoints you configure (your S3 endpoint, the GCS API, and OAuth token endpoints for ADC). It sends no analytics or crash reports, does not check for updates, and sends credentials and tokens only to the provider they belong to. If you see other network activity, that is a bug.
+- **Credentials are stored in plaintext.** `config.json` holds static credentials (S3 keys, GCS service-account paths) unencrypted. The trust boundary is your OS user account. Restrict the file with `chmod 600 ~/.config/stuie/config.json`.
+- **Prefer short-lived credentials.** For GCS use `GcloudAdc` mode, which keeps no secrets in the config. For AWS, assume a role via SSO or AWS-Vault and only fill in the config when needed.
+- **Turn on Read-Only Mode for production buckets.** It is the most effective way to make a wrong keypress harmless.
 
-STUIE makes outbound network calls **only** to the storage endpoints you
-configure (your S3 endpoint, GCS API, OAuth token endpoints for ADC).
-It does not:
+To report a vulnerability, use [GitHub's private vulnerability reporting](https://github.com/thmswt/stuie/security/advisories/new) and please do not open a public issue.
 
-- Send analytics, usage metrics, or crash reports anywhere.
-- Check for newer versions of itself.
-- Transmit credentials, bearer tokens, or signed URLs to any host other
-  than the provider in your config.
+## Development
 
-If you observe network activity that doesn't match the provider you're
-using, that's a bug — please report it via the channel in
-[`SECURITY.md`](SECURITY.md).
-
-### Credential storage
-
-`~/.config/stuie/config.json` stores static credentials (S3 access keys,
-GCS service-account paths) **in plaintext**. They are not encrypted at
-rest. The trust boundary is your OS user account: anything that user
-can read on disk is considered accessible.
-
-Recommended hygiene:
+Unit tests need no external services:
 
 ```bash
-chmod 600 ~/.config/stuie/config.json
+cargo test --lib --test config_tests --test ui_utils_tests --test app_tests --test test_read_only_storage --test test_gcs_scope
 ```
 
-Prefer short-lived / federated credentials over long-lived static keys
-where the provider supports it:
+The S3 integration tests run against a local MinIO container, so they need Docker:
 
-- **GCS:** use `GcloudAdc` mode — no secrets land in our config at all.
-- **AWS:** assume an IAM role via SSO / AWS-Vault and only populate the
-  config when needed.
+```bash
+./tests/minio_setup.sh    # start MinIO and seed test data
+cargo test --test test_s3_provider
+./tests/minio_teardown.sh # clean up
+```
 
-For production buckets, **enable Read-Only Mode** on the provider.
-That's the single most effective way to make a "wrong button" scenario
-non-destructive — see the *Read-Only Mode* section above for how it's
-enforced.
+CI runs formatting and clippy, the unit tests on Linux and macOS, and the MinIO integration tests on Linux. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, commit conventions and the pull-request process.
 
-OS-keychain integration to remove the plaintext-on-disk problem
-entirely would be a worthwhile future improvement.
+## Stability
 
-### Reporting a vulnerability
-
-Use [GitHub Private Vulnerability Reporting](https://github.com/thmswt/stuie/security/advisories/new)
-or follow the process in [`SECURITY.md`](SECURITY.md). **Please do not
-open a public issue for security reports.**
-
-## Versioning & Stability
-
-STUIE follows [Semantic Versioning 2.0](https://semver.org/) with one
-caveat that matters while we're on `0.x`:
-
-> **On `0.x`, minor version bumps may include breaking changes.**
-> A bump from `0.1.y` to `0.2.0` is allowed to rename config keys,
-> change keybindings, or remove a CLI flag. Patch bumps (`0.1.y` →
-> `0.1.(y+1)`) are bug-fixes only.
-
-The SemVer contract covers:
-
-- The **config-file schema** (`~/.config/stuie/config.json`) — field
-  names, types, defaults.
-- The **CLI surface** — flag names, exit codes, environment variables
-  STUIE reads.
-- The **default keybindings** documented in the *Keyboard Shortcuts*
-  table above.
-
-The SemVer contract does **not** cover:
-
-- The on-screen layout or colour theme — these may shift between any
-  two releases.
-- Internal Rust API surface (the `stuie::` library crate exists for the
-  binary and tests but is not a stable API; do not depend on it
-  programmatically).
-- Log file format and location.
-
-### Path to `1.0`
-
-`1.0` will be cut once **all** of the following are true:
-
-- The Azure Blob backend listed under *Pending Features* is implemented
-  (no more advertised-but-stub providers).
-- The config-file schema has been stable for at least one minor cycle.
-- CI has been green on `main` for 30 consecutive days.
-
-Until then, expect occasional minor-version churn.
+STUIE is on `0.x`. Config keys, keybindings and the UI may change between versions without notice. [`CHANGELOG.md`](CHANGELOG.md) tracks notable changes.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+Released under the MIT License. See [LICENSE](LICENSE).
