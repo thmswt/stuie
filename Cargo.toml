@@ -21,9 +21,8 @@ all = { level = "deny", priority = -1 }
 # Style choice: keep nested `if let` blocks.
 collapsible_if = "allow"
 
-# `#[async_trait]` expands `StorageBackend`'s methods into fns returning a
-# `Pin<Box<dyn Future>>` plus a `#[must_use]`, which trips this lint on
-# newer clippy. It's a macro-expansion artifact, not something in our code.
+# Fires on the `#[async_trait]` expansion of `StorageBackend` with newer
+# clippy (the diagnostic originates in the macro, not in our code).
 double_must_use = "allow"
 
 [dependencies]
