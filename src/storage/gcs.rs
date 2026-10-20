@@ -173,6 +173,8 @@ impl object_store::CredentialProvider for ScopedTokenProvider {
 struct BucketListResponse {
     #[serde(default)]
     items: Vec<BucketItem>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -503,47 +505,63 @@ impl GcsStorage {
             "Listing GCS buckets for project"
         );
 
-        let resp = self
-            .http_client
-            .get("https://storage.googleapis.com/storage/v1/b")
-            .bearer_auth(&token)
-            .query(&[("project", project)])
-            .send()
-            .await
-            .context("Failed to list GCS buckets")?;
+        // The JSON API returns at most `maxResults` buckets per page and
+        // signals more with `nextPageToken`, so keep fetching until it's gone.
+        let mut buckets: Vec<Bucket> = Vec::new();
+        let mut page_token: Option<String> = None;
 
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .context("Failed to read bucket list response body")?;
+        loop {
+            let mut query: Vec<(&str, String)> = vec![
+                ("project", project.to_string()),
+                ("maxResults", "1000".to_string()),
+            ];
+            if let Some(t) = &page_token {
+                query.push(("pageToken", t.clone()));
+            }
 
-        if !status.is_success() {
-            bail!(
-                "GCS bucket listing for project '{}' failed ({}): {}",
-                project,
-                status,
-                body
-            );
-        }
+            let resp = self
+                .http_client
+                .get("https://storage.googleapis.com/storage/v1/b")
+                .bearer_auth(&token)
+                .query(&query)
+                .send()
+                .await
+                .context("Failed to list GCS buckets")?;
 
-        let list: BucketListResponse = serde_json::from_str(&body).with_context(|| {
-            format!(
-                "Failed to parse bucket list response for project '{}' (status {}, body: {})",
-                project, status, body
-            )
-        })?;
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .context("Failed to read bucket list response body")?;
 
-        let buckets = list
-            .items
-            .into_iter()
-            .map(|b| Bucket {
+            if !status.is_success() {
+                bail!(
+                    "GCS bucket listing for project '{}' failed ({}): {}",
+                    project,
+                    status,
+                    body
+                );
+            }
+
+            let list: BucketListResponse = serde_json::from_str(&body).with_context(|| {
+                format!(
+                    "Failed to parse bucket list response for project '{}' (status {}, body: {})",
+                    project, status, body
+                )
+            })?;
+
+            buckets.extend(list.items.into_iter().map(|b| Bucket {
                 name: b.name,
                 provider_index: self.provider_index,
                 location: b.location,
                 project_id: Some(project.to_string()),
-            })
-            .collect();
+            }));
+
+            match list.next_page_token {
+                Some(t) if !t.is_empty() => page_token = Some(t),
+                _ => break,
+            }
+        }
 
         Ok(buckets)
     }
@@ -1003,5 +1021,26 @@ impl StorageBackend for GcsStorage {
 
     fn clone_box(&self) -> Box<dyn StorageBackend> {
         Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_list_response_reads_next_page_token() {
+        let body = r#"{"items":[{"name":"a","location":"EU"}],"nextPageToken":"tok"}"#;
+        let list: BucketListResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.next_page_token.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn bucket_list_response_last_page_has_no_token() {
+        let list: BucketListResponse = serde_json::from_str(r#"{"items":[]}"#).unwrap();
+        assert!(list.next_page_token.is_none());
+        let empty: BucketListResponse = serde_json::from_str("{}").unwrap();
+        assert!(empty.items.is_empty());
     }
 }
