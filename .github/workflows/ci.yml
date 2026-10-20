@@ -29,23 +29,6 @@ jobs:
         # manually with: cargo test --test test_s3_provider
         run: cargo test --lib --test config_tests --test ui_utils_tests --test app_tests --test test_read_only_storage --test test_gcs_scope --verbose
 
-  msrv:
-    name: MSRV (1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # Pinned to the version declared in Cargo.toml's `rust-version`.
-      # When MSRV is bumped, update this and the docs in CONTRIBUTING.md
-      # in the same commit so they don't drift.
-      - uses: dtolnay/rust-toolchain@1.85.0
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: msrv
-      - name: Build on MSRV
-        run: cargo build --verbose
-      - name: Test on MSRV
-        run: cargo test --lib --test config_tests --test ui_utils_tests --test app_tests --test test_read_only_storage --test test_gcs_scope --verbose
-
   fmt:
     name: Formatting
     runs-on: ubuntu-latest

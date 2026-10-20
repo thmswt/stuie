@@ -51,10 +51,8 @@ can go straight to a PR.
 
 ### Prerequisites
 
-- **Rust 1.85 or newer** — pinned via `rust-version` in `Cargo.toml`
-  and verified by the `MSRV (1.85)` CI job. Stable channel is fine.
-
-  See [MSRV bump policy](#msrv-bump-policy) below before raising it.
+- **A recent stable Rust toolchain** (2024 edition). CI builds with
+  the current stable; there is no pinned MSRV.
 - **Cargo** (ships with Rust).
 - A **Nerd Font** installed in your terminal so the file-type icons
   render correctly.
@@ -212,7 +210,7 @@ PRs much faster.
 1. Fork the repo (external contributors) or push your branch (maintainers).
 2. Open a PR against `main`. Fill in the PR template — every checkbox is
    there for a reason.
-3. Make sure CI is green: build + unit tests on Linux/macOS/Windows,
+3. Make sure CI is green: build + unit tests on Linux/macOS,
    `cargo fmt --check`, `cargo clippy -- -D warnings`.
 4. Address review feedback by pushing additional commits — please do
    **not** force-push during review unless asked, it makes incremental
@@ -227,8 +225,8 @@ PRs much faster.
 
 - Tests that cover the new behaviour (positive *and* negative cases).
 - A README / docs update if user-visible behaviour changed.
-- A `CHANGELOG.md` entry under `## [Unreleased]` once the release
-  tooling lands; until then the Conventional Commit subject is enough.
+- Optionally, a `CHANGELOG.md` entry under `## [Unreleased]`; the
+  Conventional Commit subject is enough otherwise.
 - A clear PR description: what problem, what approach, what was
   considered and rejected.
 
@@ -270,159 +268,9 @@ to amend if a sign-off is missing.
 - **No new dependencies casually.** If you're adding one, mention it in
   the PR description with a brief rationale and a note on its
   maintenance status. License must be MIT, Apache-2.0, BSD-2/3, ISC, or
-  Unicode-DFS (see `deny.toml` once it lands).
+  Unicode-DFS.
 - **Cross-platform.** Don't assume Linux paths or POSIX-only APIs.
   Crossterm and the `dirs` crate cover most of what we need.
-
----
-
-## MSRV bump policy
-
-The Minimum Supported Rust Version is currently **1.85**. It is enforced
-by the `MSRV (1.85)` CI job (`cargo build` + the unit-test suite on the
-pinned toolchain) and declared in three places that must move together:
-
-1. `rust-version = "1.85"` in `Cargo.toml`.
-2. `dtolnay/rust-toolchain@1.85.0` in `.github/workflows/ci.yml` (the
-   `msrv` job).
-3. The "Rust 1.85 or newer" line in `README.md` and the prerequisites
-   section of this file.
-
-### When you may bump MSRV
-
-- **Required dependency upgrade** that no longer supports the current
-  floor (Renovate will surface this on a routine version PR).
-- **A standard-library API stabilised in a newer version** that meaningfully
-  simplifies the code (e.g., `let-chains` in 1.88, `Option::is_none_or`
-  in 1.82). Convenience alone is not enough — it has to remove
-  meaningful complexity.
-- **Security fix** in a Rust release that we want to recommend.
-
-### Constraints on the bump
-
-- Don't bump past `stable - 6 months` without a strong reason; many
-  distros and CI environments lag.
-- A bump is its own dedicated PR (`chore(msrv): bump to 1.X`) — never
-  bundled into a feature commit. The release notes for the affected
-  release must call it out.
-- Update all three locations above in the same commit, plus this
-  document, so they don't drift.
-
-### Acceptable workarounds inside the codebase
-
-If a clippy lint suggests a fix that would require a higher MSRV, prefer:
-
-1. `#[allow(...)]` at the call site with a one-line `// MSRV: ...`
-   comment, **or**
-2. Add the lint to the `[lints.clippy]` allow-list in `Cargo.toml` with
-   a comment explaining the MSRV reason (this is what we did for
-   `collapsible_if`, whose suggested let-chain fix needs 1.88).
-
----
-
-## Releasing (maintainers only)
-
-Release tooling: **`cargo-release`** for the version bump + tag +
-changelog rollover + crates.io publish, and **`cargo-dist`** (now
-distributed as `dist`) for cross-platform binary builds attached to a
-GitHub Release. Configuration lives in `release.toml`,
-`dist-workspace.toml`, and `CHANGELOG.md` (the sentinel comments).
-
-> **Note:** dist reads its config from `dist-workspace.toml` only. A
-> `[package.metadata.dist]` table in `Cargo.toml` is silently ignored
-> (dist accepts those keys in *workspace* metadata), so don't add one —
-> it looks authoritative and does nothing.
-
-### One-time setup per maintainer
-
-```bash
-cargo install cargo-release
-# `dist` (cargo-dist) — pin to the version declared in
-# dist-workspace.toml's [dist].cargo-dist-version so the workflow you
-# generate locally matches the one CI runs.
-cargo install cargo-dist --version 0.32.0 --locked
-cargo login                # crates.io token; needs publish rights
-gh auth login              # to push tags and create releases via gh, if used
-```
-
-### One-time repo setup (already done — for reference)
-
-`dist init` writes the config and generates
-`.github/workflows/release.yml`. Re-run it whenever
-`cargo-dist-version`, `targets`, or `installers` in
-`dist-workspace.toml` changes:
-
-```bash
-dist init --yes  # non-interactive; keeps the values in dist-workspace.toml
-dist generate    # regenerates the workflow from current config
-dist plan        # dry-run: prints the artifacts a tag would produce
-git add .github/workflows/release.yml dist-workspace.toml
-git commit -m "chore(release): regenerate dist workflow for v0.X.0"
-```
-
-`dist init` will rewrite `dist-workspace.toml` with its own defaults if
-a key is missing, so re-read the file after running it and restore
-anything it dropped (`pr-run-mode`, `checksum`, the installer list).
-
-### Cutting a release
-
-1. Make sure `main` is green and your local checkout is up to date.
-2. Move all relevant lines from `## [Unreleased]` into the categories
-   they belong under (Added / Changed / Deprecated / Removed / Fixed /
-   Security). Anything that doesn't belong in user-facing notes
-   (typo fixes, internal refactors) can be omitted.
-3. Dry-run first — cargo-release prints what it *would* do without
-   touching anything:
-
-   ```bash
-   cargo release patch          # or `minor` / `major`
-   ```
-
-4. Execute when the dry-run looks right:
-
-   ```bash
-   cargo release patch --execute
-   ```
-
-   This bumps `Cargo.toml`, applies the CHANGELOG sentinel
-   replacements, creates the `chore(release): vX.Y.Z` commit, tags
-   `vX.Y.Z`, pushes both, and runs `cargo publish`.
-
-5. The pushed tag triggers `dist`'s release workflow, which builds
-   binaries for the configured targets, generates `install.sh` /
-   `install.ps1`, uploads everything to a GitHub Release with
-   checksums, and marks the release as latest.
-
-6. Verify on the GitHub Releases page and on
-   `https://crates.io/crates/stuie` that the new version is live.
-
-### Choosing the bump level (0.x policy)
-
-- **patch** (`0.X.y → 0.X.(y+1)`): bug fixes only, no behaviour or
-  config-schema changes.
-- **minor** (`0.X.y → 0.(X+1).0`): anything else, including breaking
-  changes. While we're on `0.x`, minor bumps may break compat —
-  that's documented in the README's *Versioning & Stability* section.
-- **major** (`0.X.y → 1.0.0`): only when the criteria for `1.0` listed
-  in the README are met.
-
-### When something goes wrong
-
-- **Dry-run shows a CHANGELOG replacement that didn't fire** (`min`/
-  `exactly` mismatch): the sentinel comments in `CHANGELOG.md` were
-  edited or removed. Restore the `<!-- next-header -->` and
-  `<!-- next-url -->` markers and re-run the dry-run.
-- **`cargo publish` fails on metadata**: usually a missing field after
-  someone trimmed Cargo.toml. The required set is in section 6 of
-  `PLAN.md`.
-- **Tag exists but workflow never ran**: the tag wasn't pushed (cargo-
-  release uses your git remote; check `git push --tags` succeeded), or
-  `dist`'s workflow was disabled. Push manually with
-  `git push origin vX.Y.Z` and the workflow will fire.
-- **Need to roll back a release on crates.io**: you cannot delete a
-  published version, but you can yank it (`cargo yank --version X.Y.Z`)
-  to stop new resolutions from picking it. Yanked versions remain
-  buildable for users who already depend on them.
 
 ---
 

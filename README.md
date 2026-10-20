@@ -3,7 +3,7 @@
 A modern, interactive TUI application for managing cloud object storage from your terminal. Browse buckets, upload/download files, and manage objects across multiple cloud storage providers with a keyboard-driven interface.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/thmswt/stuie/ci.yml?branch=main&logo=github&label=CI)](https://github.com/thmswt/stuie/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/Rust-1.85%2B%20(2024%20edition)-orange)
+![Rust](https://img.shields.io/badge/Rust-2024%20edition-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 ## Features
@@ -19,7 +19,7 @@ A modern, interactive TUI application for managing cloud object storage from you
 
 ## Prerequisites
 
-- Rust 1.85+ and Cargo
+- A recent stable Rust toolchain (2024 edition) and Cargo
 - A Nerd Font installed in your terminal (for file icons)
 - Access to an S3-compatible storage provider and/or a GCS account
 
@@ -183,7 +183,7 @@ non-destructive — see the *Read-Only Mode* section above for how it's
 enforced.
 
 OS-keychain integration to remove the plaintext-on-disk problem
-entirely is on the roadmap; see `PLAN.md`.
+entirely would be a worthwhile future improvement.
 
 ### Reporting a vulnerability
 
@@ -209,16 +209,13 @@ The SemVer contract covers:
   STUIE reads.
 - The **default keybindings** documented in the *Keyboard Shortcuts*
   table above.
-- The **MSRV** declared in `Cargo.toml` (`rust-version`). Bumping the
-  MSRV is a minor-version event; see the policy in
-  [`CONTRIBUTING.md`](CONTRIBUTING.md#msrv-bump-policy).
 
 The SemVer contract does **not** cover:
 
 - The on-screen layout or colour theme — these may shift between any
   two releases.
-- Internal Rust API surface (the `stuie::` crate is published for the
-  binary but is not a stable library API; do not depend on it
+- Internal Rust API surface (the `stuie::` library crate exists for the
+  binary and tests but is not a stable API; do not depend on it
   programmatically).
 - Log file format and location.
 
@@ -229,7 +226,6 @@ The SemVer contract does **not** cover:
 - The Azure Blob backend listed under *Pending Features* is implemented
   (no more advertised-but-stub providers).
 - The config-file schema has been stable for at least one minor cycle.
-- All `[blocker]` items in `PLAN.md` are resolved.
 - CI has been green on `main` for 30 consecutive days.
 
 Until then, expect occasional minor-version churn.

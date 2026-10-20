@@ -26,8 +26,8 @@ pre-commit:
     clippy:
       glob: "*.rs"
       # Lint policy lives in Cargo.toml's [lints.clippy] table:
-      # `all` is denied repo-wide, `collapsible_if` is allowed for
-      # MSRV reasons. So a plain clippy run is enough.
+      # `all` is denied repo-wide with a couple of documented allows,
+      # so a plain clippy run is enough.
       run: cargo clippy --all-targets --quiet
 
     typos:

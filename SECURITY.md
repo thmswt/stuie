@@ -26,8 +26,7 @@ A useful report includes:
 
 - The version of STUIE (output of `stuie --version` or the commit SHA
   you built from).
-- Operating system and how STUIE was installed (`cargo install`,
-  prebuilt binary, source build).
+- Operating system and how STUIE was built (`cargo build`, `cargo install --path .`).
 - A minimal reproduction — config snippet (with credentials redacted),
   steps, observed behaviour.
 - Impact: what an attacker who exploits this could do.
@@ -60,8 +59,8 @@ acknowledgement window, please re-send.
   locations, leaking creds to logs, sending creds to the wrong host.
 - Path-traversal, injection, or memory-safety issues in the file/
   upload/download paths.
-- Supply-chain issues in our distribution (tampered release artifacts,
-  typosquats, malicious dependency we shipped).
+- Supply-chain issues in this repository (a malicious dependency we
+  pulled in, tampered build or CI configuration).
 
 **Out of scope:**
 
@@ -74,9 +73,8 @@ acknowledgement window, please re-send.
   execution as the user running STUIE.
 - DoS via running out of disk space when downloading large objects, or
   similar resource-exhaustion against your own machine.
-- Issues in third-party packagers' (homebrew, AUR, distro repos)
-  builds — please report to the packager, with a CC to us if the root
-  cause is in STUIE itself.
+- Issues in third-party repackaged builds of STUIE — please report to
+  the packager, with a CC to us if the root cause is in STUIE itself.
 
 ---
 
@@ -118,8 +116,7 @@ against themselves or against other processes running as them.
   OAuth scope is also restricted at the wire level. See the
   [README's Read-Only Mode section](README.md#read-only-mode).
 - **Apply least-privilege IAM policies** on the credentials you do put
-  in the config. Sample policies are tracked under
-  [PLAN.md §9 [soon] Minimum IAM policy docs](PLAN.md).
+  in the config.
 
 ### What STUIE deliberately does not do
 
@@ -141,14 +138,12 @@ against themselves or against other processes running as them.
 
 - **OS-keychain integration** (macOS Keychain, Linux Secret Service,
   Windows Credential Manager) so credentials don't sit on disk in
-  plaintext at all. Tracked in `PLAN.md` §9 [later].
+  plaintext at all.
 - **`config.json` permission enforcement** — refuse to load if the
   file is world-readable. Tracked as a follow-up.
 - **STS-backed RO mode for S3** — mint a temporary token with a
   `Deny` policy when entering RO mode, rather than relying on the
   wrapper alone. Tracked in the README's *Pending Features*.
-- **Signed releases** — `cosign`/`sigstore` signatures on binary
-  artifacts and `SHA256SUMS`. Tracked in `PLAN.md` §6 [soon].
 
 ---
 
